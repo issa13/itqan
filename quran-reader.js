@@ -1304,7 +1304,10 @@ quranMenuDropdown.querySelectorAll(".quran-menu-item[data-quiz-action]").forEach
 // Opens the tab named in the URL (#profile etc. — see switchView()), so a
 // refresh or a shared link lands on the same tab; Quran otherwise.
 if (typeof switchView === "function") {
-  const initialView = location.hash.slice(1);
+  // #delete-account (the link given to Google Play) opens the profile
+  // tab; auth-ui.js then opens the delete dialog.
+  const VIEW_ALIASES = { "delete-account": "profile" };
+  const initialView = VIEW_ALIASES[location.hash.slice(1)] || location.hash.slice(1);
   const known = typeof appViews === "object" && appViews[initialView];
   switchView(known ? initialView : "quran", { fromHistory: true });
   // Leave the URL alone when it carries Supabase auth parameters (from a

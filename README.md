@@ -28,6 +28,7 @@ Everything else — the Quran text itself, page layout, search, question generat
 | `app.js` | The core: solo quiz ("اختبارات"), challenges ("تحديات" — 📱 محلي, 🌐 مباشر, 📝 ذاتي), XP/leveling, and the online-duel *client* (the UI side, not the server side). |
 | `quran-reader.js` | The whole "📖 القرآن" reading tab — page rendering, search, bookmarks, reciter choice, listen-to-a-range (with gapless-ish preloading), and swipe-to-turn-page on mobile. |
 | `supabase/functions/generate-duel-questions/index.ts` | A **Supabase Edge Function** — server-side code that generates the questions for online duels (🌐 مباشر). Runs on Supabase's servers, not in the browser. |
+| `supabase/functions/delete-account/index.ts` | **Supabase Edge Function** that permanently deletes the caller's account (👤 ملفي الشخصي → حذف الحساب). Needs the service-role key, so it can't run in the browser. Deploy: `supabase functions deploy delete-account`. |
 | `supabase-schema.sql` | The database structure (tables, security rules, functions) — you run this once in Supabase's SQL editor. |
 | `mushaf-layout/` | 604 JSON files — one per Mushaf page (see §3). |
 | `quran-index/` | 2 JSON files, derived from the above (see §3). |
@@ -36,6 +37,8 @@ Everything else — the Quran text itself, page layout, search, question generat
 | `vendor/`, `fonts/` | **Generated** by `npm run vendor` (§9): the Supabase browser bundle and the three web fonts, self-hosted so nothing is loaded from a CDN. Committed to the repo. |
 | `package.json`, `scripts/vendor.js` | Tooling only (vendoring third-party assets). The app itself has no build step. |
 | `fix-mushaf-surah-headers.js` | One-time repair script for surah-header lines in `mushaf-layout/`. |
+| `mobile/` | The **Android & iPhone app** — the same website packed into a phone app with Capacitor. Everything about it is in **`MOBILE.md`**. |
+| `.github/workflows/android-app.yml` | Builds the Android app automatically on GitHub (Actions tab) on every push to `main`. |
 
 ---
 
@@ -137,6 +140,10 @@ Until recently, the Supabase login library and the fonts were loaded from intern
 
 ---
 
+## 7½. The phone app
+
+`mobile/` turns this exact website into Android and iPhone apps — no second copy of the code to maintain. Keep editing the website as usual; `npm run sync` inside `mobile/` (or the automatic GitHub build) puts the changes into the app. Step-by-step instructions for beginners: **[MOBILE.md](MOBILE.md)**.
+
 ## 8. What's still on the roadmap (discussed, not yet built)
 
 - **True offline (PWA)**: a service worker to cache the app shell itself, so it loads with zero connection at all (right now, "no internet needed" applies to the *data*, but the browser still needs to fetch the HTML/CSS/JS files themselves the first time).
@@ -176,6 +183,7 @@ The anon key in `config.js` is public by design — **row-level security and the
 - **Online duels are server-authoritative.** Correct answers live only in `duel_questions` (never readable by clients) and are checked inside `submit_duel_answer()`.
 - **Content-Security-Policy** (the `<meta http-equiv>` in `index.html`) only lets this site's own script files run — no inline scripts, nothing from other domains. That's why the startup code lives in `boot.js`. If you ever move Supabase to a custom domain, or add an audio host / analytics script, add that domain to the policy or the browser will block it.
 - **Views are read-only, duels are time-checked on the server.** Section 30 revokes write access on every view; `submit_duel_answer()` / `advance_duel_question()` enforce the question window and only move on once a round is really over.
+- **Account deletion is server-side and self-only.** `delete-account` works out who is calling from their own login token (an id in the request is ignored), requires the body `{"confirm":"DELETE_MY_ACCOUNT"}`, forfeits a running duel via `prepare_account_deletion()`, then deletes the login with the admin API; every table cascades from `auth.users`. If you add a new table that points at `auth.users`, give it `on delete cascade` (or `set null`) — a plain reference blocks deleting that player.
 - **Anything user-typed is escaped before it's rendered** (`escapeHtml` and friends in the JS). Keep using `textContent` or those helpers for display names, bookmark names, etc.
 
 After changing `supabase-schema.sql`, re-run the whole file in the Supabase SQL editor — it's written to be safely re-runnable.

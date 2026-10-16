@@ -9,3 +9,10 @@ entrypoint = "./functions/generate-duel-questions/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/generate-duel-questions/*.html" ]
+
+[functions.delete-account]
+enabled = true
+# Same as generate-duel-questions: the function checks the caller's login
+# itself (auth.getUser), which also works with the new sb_publishable_ keys.
+verify_jwt = false
+entrypoint = "./functions/delete-account/index.ts"

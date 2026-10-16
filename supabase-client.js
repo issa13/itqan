@@ -88,6 +88,14 @@ function withTimeout(promise, ms, message) {
   ]).finally(() => clearTimeout(timer));
 }
 
+// Where Supabase's emails (confirm sign-up, reset password) send people
+// back to: this page. The Android/iOS app sets QF_AUTH_REDIRECT_URL to the
+// public website instead (mobile/native/native-app.js), because the app's
+// own in-app address can't be opened from an email.
+function authRedirectUrl() {
+  return window.QF_AUTH_REDIRECT_URL || (window.location.origin + window.location.pathname);
+}
+
 // signUp returns the raw { user, session } so the caller can tell
 // whether email confirmation is required (session will be null).
 async function signUp(email, password, displayName) {
@@ -97,7 +105,7 @@ async function signUp(email, password, displayName) {
     options: {
       data: { display_name: (displayName || "مستخدم").slice(0, 30) },
       // where the confirmation email's link sends people back to
-      emailRedirectTo: window.location.origin + window.location.pathname,
+      emailRedirectTo: authRedirectUrl(),
     },
   }), 20000, "network timeout");
   if (error) throw error;
@@ -115,7 +123,7 @@ async function signIn(email, password) {
 // and auth-ui.js asks for the new password.
 async function requestPasswordReset(email) {
   const { error } = await withTimeout(sb.auth.resetPasswordForEmail(email, {
-    redirectTo: window.location.origin + window.location.pathname,
+    redirectTo: authRedirectUrl(),
   }), 20000, "network timeout");
   if (error) throw error;
 }
@@ -136,6 +144,48 @@ async function updateDisplayName(name) {
     .single();
   if (error) throw error;
   return data.display_name;
+}
+
+// Permanently deletes the signed-in account and all its data, through
+// the delete-account Edge Function (supabase/functions/delete-account —
+// it needs the service-role key, which must never be in the browser).
+// Resolves when the account is gone and this device is signed out;
+// throws an Error whose message is a short code ("network timeout",
+// "not_authenticated", "delete_failed", "function_missing", …).
+async function deleteMyAccount() {
+  if (!sb || !currentUser) throw new Error("not_authenticated");
+  const deletedUserId = currentUser.id;
+  const { data, error } = await withTimeout(
+    sb.functions.invoke("delete-account", { body: { confirm: "DELETE_MY_ACCOUNT" } }),
+    30000, "network timeout"
+  );
+  if (error) {
+    let code = "delete_failed";
+    const res = error.context;
+    if (res && typeof res.status === "number") {
+      if (res.status === 404) code = "function_missing"; // not deployed yet
+      try {
+        const body = await res.json();
+        if (body && body.error) code = body.error;
+      } catch (e) { /* not JSON */ }
+    } else if (/fetch|network|Failed to send/i.test(error.message || "")) {
+      code = "network timeout";
+    }
+    throw new Error(code);
+  }
+  if (!data || !data.ok) throw new Error((data && data.error) || "delete_failed");
+
+  // The login no longer exists on the server, so only clear this device
+  // (a normal sign-out would try — and fail — to end it on the server).
+  try { await sb.auth.signOut({ scope: "local" }); } catch (e) { /* ignore */ }
+  // Per-session "already asked" lists of ذاتي quizzes (see app.js) were
+  // tied to the deleted account's sessions.
+  try {
+    Object.keys(localStorage)
+      .filter((k) => k.startsWith("qf_self_used_"))
+      .forEach((k) => localStorage.removeItem(k));
+  } catch (e) { /* ignore */ }
+  return deletedUserId;
 }
 
 async function signOut() {

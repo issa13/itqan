@@ -1191,6 +1191,40 @@ select:focus, input:focus {
 }
 .btn.small.ghost.danger:hover { background: var(--danger-bg); }
 
+/* -------- Delete account (👤 profile → ⚠️ حذف الحساب) -------- */
+.delete-account-card { text-align: center; }
+.delete-account-card .hint { margin: 4px 0 12px; }
+.btn.danger-solid {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+.btn.danger-solid:disabled { opacity: 0.45; cursor: not-allowed; }
+.delete-account-email {
+  text-align: center;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 10px;
+  word-break: break-all;
+}
+.delete-account-text { font-size: 13px; color: var(--ink); line-height: 1.8; }
+.delete-account-list {
+  margin: 6px 0 10px;
+  padding-inline-start: 20px;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--ink);
+}
+.delete-account-warning {
+  margin: 10px 0 12px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--danger);
+}
+.delete-account-confirm { align-items: flex-start; line-height: 1.6; }
+.delete-account-confirm input { accent-color: var(--danger); margin-top: 3px; flex-shrink: 0; }
+
 .leaderboard-row { padding: 6px 0; }
 
 .lb-level {

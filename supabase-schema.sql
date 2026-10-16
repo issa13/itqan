@@ -1327,8 +1327,8 @@ create table if not exists public.duels (
 
   creator_score int not null default 0,
   opponent_score int not null default 0,
-  winner_id uuid references auth.users(id),
-  forfeited_by uuid references auth.users(id),
+  winner_id uuid references auth.users(id) on delete set null,
+  forfeited_by uuid references auth.users(id) on delete set null,
 
   created_at timestamptz not null default now(),
   started_at timestamptz,
@@ -1362,7 +1362,7 @@ create table if not exists public.duel_questions (
   is_audio_only boolean not null default false,
   choices text[] not null,
   correct_index int not null,
-  winner_user_id uuid references auth.users(id), -- set once, atomically, by submit_duel_answer()
+  winner_user_id uuid references auth.users(id) on delete set null, -- set once, atomically, by submit_duel_answer()
   unique (duel_id, question_index)
 );
 
@@ -2222,6 +2222,62 @@ grant execute on function public.submit_duel_answer(bigint, int, int) to authent
 grant execute on function public.advance_duel_question(bigint, int) to authenticated;
 grant execute on function public.forfeit_duel(bigint) to authenticated;
 grant execute on function public.claim_opponent_forfeit(bigint) to authenticated;
+
+-- 31) Account deletion (👤 ملفي الشخصي → حذف الحساب). Required by Google
+--     Play and the App Store for any app that lets people sign up.
+--     The account itself is deleted by the `delete-account` Edge
+--     Function (supabase/functions/delete-account), which uses Supabase's
+--     official admin API; every row in this schema then disappears with
+--     it through the "on delete cascade" links above.
+--
+--     a) A few duel columns pointed at a player WITHOUT saying what to do
+--        when that player is deleted, which BLOCKED deleting anyone who
+--        had ever won a duel question (even from the Supabase dashboard).
+--        They now become empty instead. Written as drop + add so that
+--        re-running this file also fixes databases created before.
+alter table public.duels
+  drop constraint if exists duels_winner_id_fkey,
+  add constraint duels_winner_id_fkey foreign key (winner_id) references auth.users(id) on delete set null;
+alter table public.duels
+  drop constraint if exists duels_forfeited_by_fkey,
+  add constraint duels_forfeited_by_fkey foreign key (forfeited_by) references auth.users(id) on delete set null;
+alter table public.duel_questions
+  drop constraint if exists duel_questions_winner_user_id_fkey,
+  add constraint duel_questions_winner_user_id_fkey foreign key (winner_user_id) references auth.users(id) on delete set null;
+
+--     b) Called by the Edge Function (as the person deleting their
+--        account) just before the deletion: a duel that's underway is
+--        forfeited first, so the opponent gets the win and a clean
+--        "opponent left" ending instead of the duel vanishing mid-question.
+create or replace function public.prepare_account_deletion()
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_duel record;
+  v_forfeited int := 0;
+begin
+  if v_uid is null then
+    raise exception 'not_authenticated';
+  end if;
+  delete from public.duel_queue where user_id = v_uid;
+  for v_duel in
+    select id from public.duels
+    where (created_by = v_uid or opponent_id = v_uid)
+      and status in ('accepted', 'active')
+  loop
+    perform public.forfeit_duel(v_duel.id);
+    v_forfeited := v_forfeited + 1;
+  end loop;
+  return jsonb_build_object('ok', true, 'forfeitedDuels', v_forfeited);
+end;
+$$;
+
+revoke execute on function public.prepare_account_deletion() from public, anon, authenticated;
+grant execute on function public.prepare_account_deletion() to authenticated;
 
 -- ============================================================
 -- Done. Next steps:

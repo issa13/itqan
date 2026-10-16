@@ -74,7 +74,14 @@ need this at all.
    No manual secrets needed — Supabase automatically injects
    `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` into every Edge
    Function at deploy time.
-4. That's it. Test it by challenging a friend (or yourself, from two
+4. Deploy the account-deletion function the same way (👤 ملفي الشخصي →
+   حذف الحساب; required by Google Play and the App Store):
+   ```bash
+   supabase functions deploy delete-account
+   ```
+   Also needs no secrets. Until it's deployed, the delete button shows
+   "خدمة حذف الحساب غير مفعّلة على الخادم بعد".
+5. That's it. Test duels by challenging a friend (or yourself, from two
    browser profiles) from ⚔️ تحديات → مباشر.
 
 If this step is skipped, offline duels, solo mode, stats, friends, and
@@ -94,13 +101,16 @@ just fail with "تعذّر تحضير أسئلة التحدي" until the functio
 - Guests (not signed in) still work exactly as before, with score kept
   in `localStorage` on that device.
 - Nothing here costs money on Supabase's free tier at this scale.
-- If you ever want to reset a user's data, you can delete their row
-  from **Authentication → Users** in the Supabase dashboard — the
-  `on delete cascade` foreign keys will clean up their profile,
-  settings, and attempts automatically.
+- Players can delete their own account in 👤 ملفي الشخصي → ⚠️ حذف الحساب
+  (or via the link `https://issa13.github.io/itqan/#delete-account`).
+  You can also delete someone from **Authentication → Users** in the
+  Supabase dashboard — either way the `on delete cascade` foreign keys
+  remove all of their data (profile, settings, attempts, sessions,
+  achievements, friends, duels).
 
 ## Updating an existing project
 Whenever `supabase-schema.sql` changes, paste the whole file into the SQL
 Editor and run it again — it's written to be re-runnable and keeps your
-data. If `supabase/functions/generate-duel-questions/index.ts` changed,
-redeploy it with `supabase functions deploy generate-duel-questions`.
+data. If a file in `supabase/functions/` changed, redeploy that function,
+e.g. `supabase functions deploy generate-duel-questions` or
+`supabase functions deploy delete-account`.

@@ -1,3 +1,26 @@
+# 🗑 Account deletion — 2026-10-16
+
+Required by Google Play and the App Store for apps with sign-up.
+
+- **👤 ملفي الشخصي → ⚠️ حذف الحساب**: a dialog lists exactly what's deleted, needs a "I understand" tick, then deletes the account and signs this device out ("🗑 تم حذف حسابك نهائيًا"). Bookmarks / last page / reciter stay on the device. Android back button closes the dialog in the app.
+- **Web link** for the Play Console's "delete account" field: `https://issa13.github.io/itqan/#delete-account` — opens the dialog, asking to sign in first if needed.
+- **New Edge Function `delete-account`** — deletes the login with Supabase's official admin API (needs the service-role key, so it can't be done from the browser). Only ever deletes the caller.
+- **Database (re-run `supabase-schema.sql`)**:
+  - *Bug found while testing:* anyone who had ever won a duel question **could not be deleted at all** — not even from the Supabase dashboard — because three duel columns (`duels.winner_id`, `duels.forfeited_by`, `duel_questions.winner_user_id`) blocked it. They now become empty instead.
+  - New `prepare_account_deletion()`: a duel that's underway is forfeited first, so the opponent gets the win instead of the duel vanishing mid-question.
+- Tested on a real Postgres with the full schema (fresh install and upgrade of the previous version): after deletion no row anywhere mentions the player; the opponent keeps their stats and their duels with other players; anonymous callers can't run the helper. The function was tested for every case (no login, wrong confirmation, someone else's id in the request, server error) and the dialog in a phone-sized browser.
+
+# 📱 Mobile app — 2026-10-16
+
+The website is now also an **Android and iPhone app** (folder `mobile/`, built with Capacitor 8). Full beginner guide: **MOBILE.md**.
+
+- Same code as the website — `npm run sync` in `mobile/` copies it into the app; nothing to maintain twice.
+- Works offline for reading/quizzes/local challenges from the very first launch (all Quran data is inside the app).
+- App-only touches (`mobile/native/`): Android back button closes menus/dialogs then goes to the previous tab, status-bar icons follow the light/dark theme, notch/navigation-bar spacing on older Android phones, splash screen, app icon.
+- Automatic Android build on GitHub (`.github/workflows/android-app.yml`): an installable test APK on every push to `main`, and a signed Google Play bundle once signing secrets are added.
+- Website change: `supabase-client.js` uses `authRedirectUrl()` for the confirm/reset email links; unchanged on the website, points to `https://issa13.github.io/itqan/` inside the app.
+- In-app account deletion (required by both stores) — added, see the entry above.
+
 # Second audit — 2026-10-16
 
 Tested this time against a **real local Supabase stack** (Supabase Auth/GoTrue + PostgREST + Postgres running your `supabase-schema.sql`, plus your Edge Function), with two real accounts in a browser — login, quizzes, ذاتي sessions and resume, profile, friends, leaderboard, password reset, and duels.

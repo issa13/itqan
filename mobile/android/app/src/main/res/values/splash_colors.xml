@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Background of the launch (splash) screen on Android 12+ — the app's "paper" colour -->
+    <color name="itqan_splash_background">#F4EFE1</color>
+</resources>

@@ -1,0 +1,24 @@
+/* native-app.css — ONLY included in the Android/iOS app (added by
+   mobile/scripts/copy-web.js after styles.css). Small touches that make
+   the website feel like an installed app. */
+
+/* No "rubber band" bounce of the whole page past its top/bottom edge
+   (individual scrolling areas keep their own behaviour). */
+html.native-app,
+html.native-app body {
+  overscroll-behavior: none;
+}
+
+/* Tapping a button shouldn't flash a grey box or, on a long press,
+   select its label / pop up the iOS link preview. Quran text and other
+   content stay selectable. */
+html.native-app button,
+html.native-app .btn,
+html.native-app .bottom-nav,
+html.native-app .topbar,
+html.native-app .tab {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}

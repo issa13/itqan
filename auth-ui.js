@@ -238,6 +238,8 @@ document.addEventListener("keydown", (e) => {
   if (authModal.style.display !== "none") hideModal(authModal);
   const npm = document.getElementById("newPasswordModal");
   if (npm && npm.style.display !== "none") hideModal(npm);
+  const dam = document.getElementById("deleteAccountModal");
+  if (dam && dam.style.display !== "none" && !deleteAccountBusy) hideModal(dam);
 });
 
 authSuccessOkBtn.addEventListener("click", () => {
@@ -413,6 +415,75 @@ logoutBtn.addEventListener("click", async () => {
   try { await signOut(); } finally { logoutBtn.disabled = false; }
 });
 
+// -------- delete account (👤 → ⚠️ حذف الحساب) --------
+// Required by Google Play / the App Store. The website link
+// …/itqan/#delete-account opens this dialog directly (signing in first
+// if needed) — that's the "web link" the Play Console asks for.
+const deleteAccountModal = document.getElementById("deleteAccountModal");
+const deleteAccountForm = document.getElementById("deleteAccountForm");
+const deleteAccountConfirmCheck = document.getElementById("deleteAccountConfirmCheck");
+const deleteAccountSubmitBtn = document.getElementById("deleteAccountSubmitBtn");
+const deleteAccountError = document.getElementById("deleteAccountError");
+const deleteAccountEmail = document.getElementById("deleteAccountEmail");
+let deleteAccountBusy = false;   // while the request runs, the dialog can't be closed
+let accountJustDeleted = false;  // so onAuthChange says "deleted", not "signed out"
+// Captured now, before quran-reader.js rewrites the address to a tab name.
+let pendingDeleteAccountLink = location.hash === "#delete-account";
+
+function openDeleteAccountModal() {
+  if (!currentUser) { openLoginModal(); return; }
+  deleteAccountEmail.textContent = currentUser.email || "";
+  deleteAccountConfirmCheck.checked = false;
+  deleteAccountSubmitBtn.disabled = true;
+  deleteAccountSubmitBtn.textContent = "حذف حسابي نهائيًا";
+  deleteAccountError.style.display = "none";
+  showModal(deleteAccountModal);
+}
+
+function closeDeleteAccountModal() {
+  if (!deleteAccountBusy) hideModal(deleteAccountModal);
+}
+
+function deleteAccountErrorMessage(code) {
+  if (code === "network timeout") return "تعذّر الاتصال بالخادم. تحقق من الإنترنت وحاول مرة أخرى.";
+  if (code === "not_authenticated") return "انتهت جلسة الدخول. سجّل الخروج ثم ادخل من جديد وحاول مرة أخرى.";
+  if (code === "function_missing") return "خدمة حذف الحساب غير مفعّلة على الخادم بعد. حاول لاحقًا.";
+  return "تعذّر حذف الحساب. حاول مرة أخرى بعد قليل.";
+}
+
+document.getElementById("deleteAccountOpenBtn").addEventListener("click", openDeleteAccountModal);
+document.getElementById("deleteAccountCloseBtn").addEventListener("click", closeDeleteAccountModal);
+document.getElementById("deleteAccountCancelBtn").addEventListener("click", closeDeleteAccountModal);
+deleteAccountModal.addEventListener("click", (e) => { if (e.target === deleteAccountModal) closeDeleteAccountModal(); });
+deleteAccountConfirmCheck.addEventListener("change", () => {
+  deleteAccountSubmitBtn.disabled = !deleteAccountConfirmCheck.checked;
+});
+
+deleteAccountForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!deleteAccountConfirmCheck.checked || deleteAccountBusy) return;
+  deleteAccountBusy = true;
+  deleteAccountSubmitBtn.disabled = true;
+  deleteAccountConfirmCheck.disabled = true;
+  deleteAccountSubmitBtn.textContent = "جارٍ حذف الحساب...";
+  deleteAccountError.style.display = "none";
+  try {
+    accountJustDeleted = true;
+    await deleteMyAccount();
+    deleteAccountBusy = false;
+    hideModal(deleteAccountModal);
+  } catch (err) {
+    accountJustDeleted = false;
+    deleteAccountBusy = false;
+    deleteAccountError.textContent = deleteAccountErrorMessage(err && err.message);
+    deleteAccountError.style.display = "block";
+    deleteAccountSubmitBtn.textContent = "حذف حسابي نهائيًا";
+    deleteAccountSubmitBtn.disabled = false;
+  } finally {
+    deleteAccountConfirmCheck.disabled = false;
+  }
+});
+
 // -------- react to auth state --------
 let lastKnownLevel = null;
 
@@ -572,7 +643,12 @@ onAuthChange(async (user, info) => {
     // Tell the person what just happened — previously the only sign of
     // a successful login was the small level badge appearing. Not on
     // page load, when a saved session is merely being restored.
-    if (!(info && info.initial)) showInfoToast(user ? "✅ تم تسجيل الدخول" : "تم تسجيل الخروج");
+    if (!user && accountJustDeleted) {
+      accountJustDeleted = false;
+      showInfoToast("🗑 تم حذف حسابك نهائيًا");
+    } else if (!(info && info.initial)) {
+      showInfoToast(user ? "✅ تم تسجيل الدخول" : "تم تسجيل الخروج");
+    }
   }
 
   if (user) {
@@ -601,6 +677,7 @@ onAuthChange(async (user, info) => {
     if (typeof unsubscribeFromIncomingDuelInvites === "function") unsubscribeFromIncomingDuelInvites();
     hideDuelInviteBanner();
     hideModal(newPasswordModal);
+    if (!deleteAccountBusy) hideModal(deleteAccountModal);
   }
 
   // The open tab was rendered for the previous user (or for a guest) —
@@ -608,6 +685,14 @@ onAuthChange(async (user, info) => {
   // leaderboard tab left it empty until a page refresh, and logging out
   // left the previous account's friends list on screen.
   if (changedUser) refreshCurrentView();
+
+  // Arrived through the …/#delete-account link and now signed in.
+  if (user && pendingDeleteAccountLink) {
+    pendingDeleteAccountLink = false;
+    switchView("profile");
+    hideModal(authModal);
+    openDeleteAccountModal();
+  }
 });
 
 // -------- stats view (sessions) --------
@@ -1513,4 +1598,12 @@ async function openFriendProfile(friendUserId) {
 }
 
 // Kick off auth
-initAuth();
+initAuth().then(() => {
+  // …/#delete-account opened while signed out: sign in first, then
+  // onAuthChange above opens the dialog.
+  if (pendingDeleteAccountLink && !currentUser) {
+    switchView("profile");
+    openLoginModal();
+    showInfoToast("سجّل الدخول أولًا لحذف حسابك");
+  }
+});
