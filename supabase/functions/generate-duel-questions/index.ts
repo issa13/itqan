@@ -31,7 +31,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const DATA_BASE_URL = Deno.env.get("QURAN_DATA_BASE_URL") || "https://issa13.github.io/quran-flashcards/";
+const DATA_BASE_URL = Deno.env.get("QURAN_DATA_BASE_URL") || "https://issa13.github.io/itqan/";
 const MCQ_CHOICE_COUNT = 6;
 
 const JUZ_START_PAGE = [

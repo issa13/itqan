@@ -2230,7 +2230,7 @@ grant execute on function public.claim_opponent_forfeit(bigint) to authenticated
 --    the bare project URL, nothing appended after .supabase.co)
 -- 3. Authentication → Providers → make sure Email is enabled
 --    (Authentication → URL Configuration → add your site URL,
---    e.g. https://yourname.github.io/quran-flashcards, to Redirect URLs)
+--    e.g. https://yourname.github.io/itqan, to Redirect URLs)
 -- 4. For online duels (⚔️ تحديات → مباشر) specifically: deploy the
 --    generate-duel-questions Edge Function (supabase/functions/
 --    generate-duel-questions/) — see SETUP.md for the exact command.

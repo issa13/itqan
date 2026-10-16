@@ -31,9 +31,9 @@ stats, and the leaderboard, connect a free Supabase project (about
 
 ## 4. Allow your site to sign users in
 1. Go to **Authentication → URL Configuration**.
-2. Add your deployed URL (e.g. `https://issa13.github.io/quran-flashcards`)
+2. Add your deployed URL (e.g. `https://issa13.github.io/itqan`)
    to **Site URL** and **Redirect URLs** — add it to Redirect URLs both
-   with and without `/index.html` (e.g. `https://issa13.github.io/quran-flashcards/**`
+   with and without `/index.html` (e.g. `https://issa13.github.io/itqan/**`
    covers both). The "نسيت كلمة المرور؟" (forgot password) and email-
    confirmation links send people back to this address; if it isn't
    listed, Supabase sends them to the Site URL without logging them in.
