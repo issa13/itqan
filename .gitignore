@@ -1,4 +1,8 @@
-# --- add these lines to your existing .gitignore ---
 node_modules/
-www/
 .DS_Store
+
+# Supabase CLI local cache (project ref, pooler URL, versions) — machine-specific
+supabase/.temp/
+supabase/.branches/
+.env
+.env.*

@@ -26,17 +26,15 @@ Everything else — the Quran text itself, page layout, search, question generat
 | `auth-ui.js` | Wires up login/signup UI, profile, friends, leaderboard, and switching between tabs. |
 | `app.js` | The core: solo quiz ("اختبارات"), challenges ("تحديات" — 📱 محلي, 🌐 مباشر, 📝 ذاتي), XP/leveling, and the online-duel *client* (the UI side, not the server side). |
 | `quran-reader.js` | The whole "📖 القرآن" reading tab — page rendering, search, bookmarks, reciter choice, listen-to-a-range (with gapless-ish preloading), and swipe-to-turn-page on mobile. |
-| `index.ts` | A **Supabase Edge Function** — server-side code that generates the questions for online duels (🌐 مباشر). Runs on Supabase's servers, not in the browser. |
+| `supabase/functions/generate-duel-questions/index.ts` | A **Supabase Edge Function** — server-side code that generates the questions for online duels (🌐 مباشر). Runs on Supabase's servers, not in the browser. |
 | `supabase-schema.sql` | The database structure (tables, security rules, functions) — you run this once in Supabase's SQL editor. |
 | `mushaf-layout/` | 604 JSON files — one per Mushaf page (see §3). |
 | `quran-index/` | 2 JSON files, derived from the above (see §3). |
 | `download-mushaf-layout.sh` | One-time script that downloads `mushaf-layout/`. |
 | `derive-quran-index.js` | One-time script that builds `quran-index/` from `mushaf-layout/`. |
 | `vendor/`, `fonts/` | **Generated** by `npm run vendor` (§9): the Supabase browser bundle and the three web fonts, self-hosted so nothing is loaded from a CDN. Committed to the repo. |
-| `package.json`, `scripts/` | Build tooling only (vendoring + assembling `www/`). The app itself still has no build step. |
-| `capacitor.config.json` | Settings for the native iOS/Android wrapper (§9). |
-| `www/` | **Generated** by `npm run build:web` — the folder Capacitor packages into the native apps. Git-ignored, safe to delete. |
-| `android/`, `ios/` | The native projects Capacitor creates (§9). |
+| `package.json`, `scripts/vendor.js` | Tooling only (vendoring third-party assets). The app itself has no build step. |
+| `fix-mushaf-surah-headers.js` | One-time repair script for surah-header lines in `mushaf-layout/`. |
 
 ---
 
@@ -146,32 +144,35 @@ Until recently, the Supabase login library and the fonts were loaded from intern
 
 ---
 
-## 9. One codebase for the website AND the native apps
+## 9. Tooling, deploying, and how repeats are prevented
 
-The repo root is the **single source of truth**. The same `index.html`, CSS and JS are what GitHub Pages serves *and* what gets packaged into the iOS/Android apps by [Capacitor](https://capacitorjs.com) — there is no separate "mobile version". Native-only behaviour (Android back button, status bar, etc.) will live in one file, `native-shell.js`, that does nothing unless it detects it's running inside the native shell, so the website is never affected.
+The Supabase browser library and the three fonts are **self-hosted** (`vendor/`, `fonts/`) so the site never depends on a CDN. They're generated once and committed:
 
-```
-repo root  ──►  GitHub Pages serves it directly            (the website, as always)
-     │
-     └─ npm run build:web ─► www/ ─► npx cap sync ─► Xcode / Android Studio   (the apps)
-```
-
-### One-time setup
 ```bash
-npm install -D --save-exact @supabase/supabase-js
-npm install -D @fontsource/tajawal @fontsource/aref-ruqaa @fontsource/amiri-quran @capacitor/cli
-npm install @capacitor/core @capacitor/android @capacitor/ios
-npm run vendor        # creates vendor/ and fonts/  — COMMIT them (Pages needs them too)
+npm install          # only the vendoring sources: @supabase/supabase-js + 3 @fontsource packages
+npm run vendor       # regenerates vendor/ and fonts/ — COMMIT them (GitHub Pages serves them)
 ```
 
-### Day to day
-- **Website:** commit and push, exactly as before. Bump `QF_ASSET_VERSION` (and the `?v=` on the CSS links) in `index.html` when you deploy, so browsers drop stale cache.
-- **Apps:** `npm run sync` rebuilds `www/` and copies it into the native projects; `npm run android` / `npm run ios` do that and open Android Studio / Xcode.
-- Editing an app file? Edit it in the repo root, never inside `www/`, `android/` or `ios/` — those are regenerated.
+### Deploying
+Commit and push — GitHub Pages serves the repo root as-is. Before each deploy, bump the version string in `index.html` (`QF_ASSET_VERSION` **and** every `?v=` on the `<link>`/`<script>` tags) so browsers drop their cached copies.
 
 ### Question de-duplication (how repeats are prevented)
 A question is identified by **(type, question ayah)**.
 - **⚔️ التحديات** (محلي / مباشر / ذاتي): the same question never repeats within one challenge. If a type runs out of unused questions in the chosen range (e.g. "ayah count" over 7 pages can only ever produce 7), the rest of that type is skipped with a notice instead of repeating, and the challenge is simply shorter.
 - **📝 اختبارات:** the same question doesn't repeat within the next 25 questions. In a range so small that a type has fewer than 25 possible questions, the oldest one repeats first rather than blocking you.
-- 🌐 مباشر builds its questions on the server (`index.ts`) with the same rule, so **redeploy the Edge Function** (`supabase functions deploy generate-duel-questions`) after updating it.
+- 🌐 مباشر builds its questions on the server (`supabase/functions/generate-duel-questions/index.ts`) with the same rule, so **redeploy the Edge Function** (`supabase functions deploy generate-duel-questions`) after updating it.
 - ذاتي remembers what it already asked in `localStorage` (per session), so refreshing mid-challenge can't cause repeats either.
+
+---
+
+## 10. Security model (what protects what)
+
+The anon key in `config.js` is public by design — **row-level security and the RPC functions in `supabase-schema.sql` are the real gatekeepers.** Rules worth knowing before changing the schema:
+
+- **Clients only read tables directly.** Every write that affects scores (`record_attempt`, all duel/friend actions) goes through a `security definer` function that checks `auth.uid()` and validates its inputs. `attempts` in particular is SELECT-only for clients — if it ever allowed INSERT/UPDATE, anyone could fake leaderboard accuracy.
+- **New functions are callable by everyone by default.** Postgres/Supabase grant `EXECUTE` to `anon` and `authenticated` automatically, so section 30 of the schema revokes it from every `security definer` function and re-grants only the ones the app calls. When you add a new RPC, add a matching `grant execute ... to authenticated` there (and nothing for internal helpers).
+- **Solo-quiz scoring is client-reported.** Questions for 📝 اختبارات / ذاتي are generated in the browser, so a determined user could report answers as correct. The server limits the damage (input validation, one attempt per 350 ms), but fully cheat-proof scoring would need server-side question generation like duels use.
+- **Online duels are server-authoritative.** Correct answers live only in `duel_questions` (never readable by clients) and are checked inside `submit_duel_answer()`.
+- **Anything user-typed is escaped before it's rendered** (`escapeHtml` and friends in the JS). Keep using `textContent` or those helpers for display names, bookmark names, etc.
+
+After changing `supabase-schema.sql`, re-run the whole file in the Supabase SQL editor — it's written to be safely re-runnable.

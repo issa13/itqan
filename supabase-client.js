@@ -1,9 +1,9 @@
 // Thin wrapper around the Supabase client: auth + data helpers used
 // by auth-ui.js and app.js. Falls back gracefully to guest mode if
 // config.js hasn't been filled in yet, OR if the Supabase SDK itself
-// failed to load (e.g. no internet — it's loaded from a CDN in
-// index.html) — either way, sb stays null and nothing downstream
-// should assume it's non-null without checking first.
+// failed to load (vendor/supabase.js missing) — either way, sb stays
+// null and nothing downstream should assume it's non-null without
+// checking first.
 
 const isConfigured =
   typeof SUPABASE_URL === "string" &&
@@ -24,15 +24,37 @@ function onAuthChange(fn) {
   fn(currentUser); // fire immediately with current state
 }
 
+// Listeners only care about WHO is signed in, not about token
+// refreshes. Supabase fires onAuthStateChange for INITIAL_SESSION,
+// TOKEN_REFRESHED (roughly hourly), tab re-focus, etc. — re-running every
+// listener on each of those used to re-subscribe realtime channels,
+// re-fetch settings/stats and re-enter the ذاتي quiz for no reason.
+let lastNotifiedUserId; // undefined = never notified yet
+
 function notifyAuthListeners() {
-  authListeners.forEach((fn) => fn(currentUser));
+  const id = currentUser ? currentUser.id : null;
+  if (id === lastNotifiedUserId) return;
+  lastNotifiedUserId = id;
+  authListeners.forEach((fn) => {
+    try {
+      const result = fn(currentUser);
+      if (result && typeof result.catch === "function") result.catch((e) => console.error("auth listener error", e));
+    } catch (e) {
+      console.error("auth listener error", e);
+    }
+  });
 }
 
 async function initAuth() {
   if (!sb) return;
 
-  const { data } = await sb.auth.getSession();
-  currentUser = data?.session?.user || null;
+  try {
+    const { data } = await sb.auth.getSession();
+    currentUser = data?.session?.user || null;
+  } catch (e) {
+    console.error("getSession error", e);
+    currentUser = null;
+  }
   notifyAuthListeners();
 
   sb.auth.onAuthStateChange((_event, session) => {
@@ -47,7 +69,7 @@ async function signUp(email, password, displayName) {
   const { data, error } = await sb.auth.signUp({
     email,
     password,
-    options: { data: { display_name: displayName || "مستخدم" } },
+    options: { data: { display_name: (displayName || "مستخدم").slice(0, 30) } },
   });
   if (error) throw error;
   return data;

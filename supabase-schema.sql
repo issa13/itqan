@@ -33,7 +33,20 @@ create policy "Users can insert their own profile"
 drop policy if exists "Users can update their own profile" on public.profiles;
 create policy "Users can update their own profile"
   on public.profiles for update
-  using (auth.uid() = id);
+  using (auth.uid() = id)
+  with check (auth.uid() = id);
+
+-- Display names are shown to other users (leaderboard, friends, duel
+-- lobby) — keep them non-blank and short. NOT VALID: enforced for every
+-- new insert/update, without failing on any older row that predates it.
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'profiles_display_name_len') then
+    alter table public.profiles
+      add constraint profiles_display_name_len
+      check (char_length(btrim(display_name)) between 1 and 40) not valid;
+  end if;
+end $$;
 
 -- Drop the old profile-level leaderboard opt-in — leaderboard is now
 -- per-session (see sessions.is_public below), not per-user.
@@ -173,11 +186,17 @@ alter table public.attempts
 
 alter table public.attempts enable row level security;
 
+-- SELECT only. Attempts used to be "for all", which let any signed-in
+-- user insert rows directly (bypassing record_attempt()'s validation
+-- and rate limit) or simply UPDATE every old attempt to is_correct =
+-- true — instantly faking accuracy on the public leaderboard. Every
+-- write now goes through record_attempt() (security definer), and
+-- deleting a session still removes its attempts via ON DELETE CASCADE.
 drop policy if exists "Users manage their own attempts" on public.attempts;
-create policy "Users manage their own attempts"
-  on public.attempts for all
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
+drop policy if exists "Users view their own attempts" on public.attempts;
+create policy "Users view their own attempts"
+  on public.attempts for select
+  using (auth.uid() = user_id);
 
 create index if not exists attempts_user_created_idx
   on public.attempts (user_id, created_at desc);
@@ -263,14 +282,19 @@ on conflict (code) do nothing;
 -- getTypeLabel()) instead of 13 hand-typed rows, so it can't drift.
 do $$
 declare
+  -- 'next' was missing here while the app offers it — so after a user's
+  -- 30th correct "next" answer, record_attempt() tried to award a badge
+  -- code that didn't exist, hit the foreign key, and every later correct
+  -- "next" answer failed to save. Appended last so sort_order is stable.
   v_types text[] := array['first','last','previous','surah','pageNumber','ayahCount',
                            'nextPageFirst','prevPageFirst','pageEndToNextFirst',
-                           'pageStartToPrevLast','juz','ayahNumber','listenNext'];
+                           'pageStartToPrevLast','juz','ayahNumber','listenNext','next'];
   v_labels text[] := array['خمن الآية الأولى بالصفحة','خمن الآية الأخيرة بالصفحة','خمن الآية السابقة',
                             'خمن السورة','خمن رقم الصفحة','خمن عدد آيات الصفحة',
                             'خمن أول آية بالصفحة التالية','خمن أول آية بالصفحة السابقة',
                             'من آخر آية: خمن أول آية بالصفحة التالية','من أول آية: خمن آخر آية بالصفحة السابقة',
-                            'خمن الجزء','خمن رقم الآية بالسورة','استمع ثم خمن الآية التالية'];
+                            'خمن الجزء','خمن رقم الآية بالسورة','استمع ثم خمن الآية التالية',
+                            'خمن الآية التالية'];
   i int;
 begin
   for i in 1 .. array_length(v_types, 1) loop
@@ -432,6 +456,28 @@ declare
   v_earned text[] := '{}';
   v_owns_session boolean;
 begin
+  if v_uid is null then
+    raise exception 'not_authenticated';
+  end if;
+
+  -- Input validation: this function is callable directly through the
+  -- REST API, so nothing the browser sends is trusted blindly. A bogus
+  -- page would pollute the heatmap and could fake wide_coverage_500;
+  -- a bogus type would pollute type_correct_counts.
+  if p_question_type is null or p_question_type not in (
+    'first', 'last', 'previous', 'next', 'surah', 'pageNumber', 'ayahCount',
+    'nextPageFirst', 'prevPageFirst', 'pageEndToNextFirst', 'pageStartToPrevLast',
+    'juz', 'ayahNumber', 'listenNext'
+  ) then
+    raise exception 'invalid_question_type';
+  end if;
+  if p_page is not null and (p_page < 1 or p_page > 604) then
+    raise exception 'invalid_page';
+  end if;
+  if p_range_min is not null and (p_range_min < 1 or p_range_min > 604) then p_range_min := null; end if;
+  if p_range_max is not null and (p_range_max < 1 or p_range_max > 604) then p_range_max := null; end if;
+  if p_local_hour is not null and (p_local_hour < 0 or p_local_hour > 23) then p_local_hour := null; end if;
+
   -- security definer bypasses RLS entirely, so this ownership check is
   -- the ONLY thing stopping a caller from passing another user's
   -- (guessable, sequential) session id and attaching their attempt to
@@ -697,13 +743,19 @@ grant execute on function public.record_attempt(bigint, text, int, boolean, int,
 -- 7) Backfill: give existing users (from before sessions existed) a
 --    default session and attach their orphaned attempts to it.
 --    No-op on a fresh project (nothing to backfill).
+--    Only for users who have NO session at all: the 📝 اختبارات screen
+--    deliberately records attempts with session_id = null, so without
+--    this guard every re-run of this file swept all of those into a new
+--    "الجلسة الأولى" session and repointed the user's active session.
 do $$
 declare
   r record;
   new_id bigint;
 begin
   for r in
-    select distinct user_id from public.attempts where session_id is null
+    select distinct a.user_id from public.attempts a
+    where a.session_id is null
+      and not exists (select 1 from public.sessions s where s.user_id = a.user_id)
   loop
     insert into public.sessions (user_id, title, range_min, range_max)
     values (r.user_id, 'الجلسة الأولى', 1, 604)
@@ -733,7 +785,12 @@ begin
   insert into public.profiles (id, display_name)
   values (
     new.id,
-    coalesce(new.raw_user_meta_data->>'display_name', 'مستخدم')
+    -- signup metadata is client-supplied: trim, cap at 40 chars, and
+    -- fall back to a default if it ends up blank.
+    coalesce(
+      nullif(left(btrim(regexp_replace(new.raw_user_meta_data->>'display_name', '\s+', ' ', 'g')), 40), ''),
+      'مستخدم'
+    )
   );
 
   insert into public.friend_codes (user_id, code)
@@ -1345,13 +1402,21 @@ create table if not exists public.duel_answers (
 
 alter table public.duel_answers enable row level security;
 
+-- Your own answers always; the opponent's only once that question is
+-- over (or the duel finished) — otherwise a player could poll this
+-- table mid-question to see which choice the opponent picked.
 drop policy if exists "Participants can view duel answers" on public.duel_answers;
 create policy "Participants can view duel answers"
   on public.duel_answers for select
-  using (exists (
-    select 1 from public.duels d
-    where d.id = duel_answers.duel_id and (d.created_by = auth.uid() or d.opponent_id = auth.uid())
-  ));
+  using (
+    duel_answers.user_id = auth.uid()
+    or exists (
+      select 1 from public.duels d
+      where d.id = duel_answers.duel_id
+        and (d.created_by = auth.uid() or d.opponent_id = auth.uid())
+        and (d.status = 'finished' or duel_answers.question_index < d.current_question_index)
+    )
+  );
 
 -- 20) duel_queue: quick-match waiting room. A row here means "I'm
 --     waiting for an opponent with this exact config." Matching only
@@ -1394,11 +1459,13 @@ as $$
     and not exists (
       select 1 from unnest(p_types) t
       where t not in (
-        'first', 'last', 'previous', 'surah', 'pageNumber', 'ayahCount',
+        'first', 'last', 'previous', 'next', 'surah', 'pageNumber', 'ayahCount',
         'nextPageFirst', 'prevPageFirst', 'pageEndToNextFirst', 'pageStartToPrevLast',
         'juz', 'ayahNumber', 'listenNext'
       )
-    );
+    )
+    -- no duplicates (they'd double that type's share of the duel)
+    and array_length(p_types, 1) = (select count(distinct t) from unnest(p_types) t);
 $$;
 
 -- 21) create_friend_duel(): sends a challenge to an accepted friend.
@@ -1444,6 +1511,9 @@ begin
   end if;
   if p_range_min is null or p_range_max is null or p_range_min < 1 or p_range_max > 604 or p_range_min >= p_range_max then
     raise exception 'invalid_range';
+  end if;
+  if p_timer_seconds is not null and (p_timer_seconds < 5 or p_timer_seconds > 60) then
+    raise exception 'invalid_timer';
   end if;
 
   insert into public.duels (
@@ -1499,6 +1569,9 @@ begin
   end if;
   if p_range_min is null or p_range_max is null or p_range_min < 1 or p_range_max > 604 or p_range_min >= p_range_max then
     raise exception 'invalid_range';
+  end if;
+  if p_timer_seconds is not null and (p_timer_seconds < 5 or p_timer_seconds > 60) then
+    raise exception 'invalid_timer';
   end if;
 
   insert into public.duels (
@@ -1597,6 +1670,9 @@ begin
   end if;
   if p_range_min is null or p_range_max is null or p_range_min < 1 or p_range_max > 604 or p_range_min >= p_range_max then
     raise exception 'invalid_range';
+  end if;
+  if p_timer_seconds is not null and (p_timer_seconds < 5 or p_timer_seconds > 60) then
+    raise exception 'invalid_timer';
   end if;
 
   select array(select unnest(p_question_types) order by 1) into v_types;
@@ -2029,6 +2105,51 @@ left join public.profiles cr on cr.id = d.created_by
 left join public.profiles op on op.id = d.opponent_id
 where (d.created_by = auth.uid() or d.opponent_id = auth.uid())
   and d.status in ('accepted', 'active');
+
+-- 30) Function privileges. Postgres grants EXECUTE on every new
+--     function to PUBLIC, and Supabase additionally grants it to the
+--     `anon` and `authenticated` roles — so a security-definer function
+--     is callable through the REST API (supabase.rpc(...)) by anyone
+--     holding the public anon key, whether or not it was ever "granted".
+--     award_duel_win_achievements() in particular was callable with ANY
+--     user id, handing out +50 XP and duel badges per call. Lock every
+--     privileged function down, then re-grant only what the app calls.
+do $$
+declare
+  f record;
+begin
+  for f in
+    select p.oid::regprocedure as sig
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.prosecdef                       -- security definer only
+      and p.prorettype <> 'trigger'::regtype
+  loop
+    execute format('revoke execute on function %s from public, anon, authenticated', f.sig);
+  end loop;
+end $$;
+
+-- Re-grant the RPCs the signed-in app actually calls. Every one of them
+-- checks auth.uid() itself. award_duel_win_achievements() is
+-- deliberately NOT here: it is internal, only ever called from inside
+-- the other security-definer functions (which run as the owner).
+grant execute on function public.record_attempt(bigint, text, int, boolean, int, int, int, boolean) to authenticated;
+grant execute on function public.send_friend_request(text) to authenticated;
+grant execute on function public.respond_friend_request(bigint, boolean) to authenticated;
+grant execute on function public.remove_friend(uuid) to authenticated;
+grant execute on function public.send_friend_request_by_user_id(uuid) to authenticated;
+grant execute on function public.get_friend_profile(uuid) to authenticated;
+grant execute on function public.create_friend_duel(uuid, int, int, int, text[], int) to authenticated;
+grant execute on function public.create_direct_duel(uuid, int, int, int, text[], int) to authenticated;
+grant execute on function public.respond_duel_invite(bigint, boolean) to authenticated;
+grant execute on function public.cancel_duel(bigint) to authenticated;
+grant execute on function public.join_quick_match_queue(int, int, int, text[], int) to authenticated;
+grant execute on function public.leave_quick_match_queue() to authenticated;
+grant execute on function public.submit_duel_answer(bigint, int, int) to authenticated;
+grant execute on function public.advance_duel_question(bigint, int) to authenticated;
+grant execute on function public.forfeit_duel(bigint) to authenticated;
+grant execute on function public.claim_opponent_forfeit(bigint) to authenticated;
 
 -- ============================================================
 -- Done. Next steps:

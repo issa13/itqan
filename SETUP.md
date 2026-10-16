@@ -39,7 +39,8 @@ stats, and the leaderboard, connect a free Supabase project (about
    it on for extra security.
 
 ## 5. Deploy
-Commit and push `config.js` with your real values, then deploy as
+Commit and push `config.js` with your real values (the publishable/anon key
+is meant to be public — never put the `service_role` key in any client file), then deploy as
 before (e.g. GitHub Pages). That's it — accounts, settings sync, per
 user stats, and the opt-in leaderboard are live.
 
@@ -61,10 +62,9 @@ need this at all.
    supabase login
    supabase link --project-ref your-project-ref
    ```
-3. Deploy the function:
+3. Deploy the function (its code already lives in
+   `supabase/functions/generate-duel-questions/index.ts`):
    ```bash
-   supabase functions new generate-duel-questions
-   then copy the index.ts to .\supabase\functions\generate-duel-questions
    supabase functions deploy generate-duel-questions
    ```
    No manual secrets needed — Supabase automatically injects
@@ -94,3 +94,9 @@ just fail with "تعذّر تحضير أسئلة التحدي" until the functio
   from **Authentication → Users** in the Supabase dashboard — the
   `on delete cascade` foreign keys will clean up their profile,
   settings, and attempts automatically.
+
+## Updating an existing project
+Whenever `supabase-schema.sql` changes, paste the whole file into the SQL
+Editor and run it again — it's written to be re-runnable and keeps your
+data. If `supabase/functions/generate-duel-questions/index.ts` changed,
+redeploy it with `supabase functions deploy generate-duel-questions`.

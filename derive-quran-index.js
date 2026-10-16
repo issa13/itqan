@@ -207,8 +207,8 @@ function main() {
   }
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
-  fs.writeFileSync(path.join(OUT_DIR, "surahs.json"), JSON.stringify(surahs, null, 4), "utf8");
-  fs.writeFileSync(path.join(OUT_DIR, "ayahs.json"), JSON.stringify(ayahs, null, 4), "utf8");
+  fs.writeFileSync(path.join(OUT_DIR, "surahs.json"), JSON.stringify(surahs), "utf8");
+  fs.writeFileSync(path.join(OUT_DIR, "ayahs.json"), JSON.stringify(ayahs), "utf8");
 
   console.log(`Wrote ${surahs.length} surahs to quran-index/surahs.json`);
   console.log(`Wrote ${ayahs.length} ayahs to quran-index/ayahs.json`);

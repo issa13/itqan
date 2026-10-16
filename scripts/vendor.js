@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Copies the third-party assets the app used to load from CDNs into
-// this repo, so the app (web AND native) has no runtime CDN dependency:
+// this repo, so the website has no runtime CDN dependency:
 //   - the Supabase browser bundle  -> vendor/supabase.js
 //   - Tajawal / Aref Ruqaa / Amiri Quran web fonts -> fonts/ + fonts/fonts.css
 //

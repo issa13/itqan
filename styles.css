@@ -132,9 +132,9 @@ body::before {
   position: relative;
   z-index: 1;
   min-height: 100vh;
-  /* Safe areas (notch / status bar / home indicator). They resolve to 0 in a
-     normal browser tab, so the website looks exactly as before; inside the
-     native apps (and iPhone Safari with viewport-fit=cover) they keep content
+  min-height: 100dvh;
+  /* Safe areas (notch / home indicator). They resolve to 0 in most
+     browser tabs; on iPhone Safari (viewport-fit=cover) they keep content
      clear of the system UI. */
   padding:
     calc(22px + env(safe-area-inset-top, 0px))
@@ -271,8 +271,12 @@ body::before {
 .bottom-nav::-webkit-scrollbar { display: none; }
 
 .bottom-nav-btn {
-  flex: 0 0 auto;
-  min-width: 68px;
+  /* Equal-width columns that always fit the screen (6 tabs on a 320px
+     phone ≈ 52px each) — previously each tab had a 68px minimum, so on
+     small phones the last tabs were scrolled off-screen with no hint. */
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 96px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -283,11 +287,13 @@ body::before {
   color: var(--muted);
   font-family: inherit;
   cursor: pointer;
-  padding: 6px 10px;
+  padding: 6px 2px;
   border-radius: 12px;
   transition: background-color 0.15s var(--ease), color 0.15s var(--ease);
+  -webkit-tap-highlight-color: transparent;
 }
 .bottom-nav-btn:hover { background: rgba(var(--emerald-rgb), 0.08); }
+.bottom-nav-btn:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
 
 .bottom-nav-btn .bn-icon {
   font-size: 18px;
@@ -296,7 +302,14 @@ body::before {
 .bottom-nav-btn .bn-label {
   font-size: 10px;
   font-weight: 800;
-  white-space: nowrap;
+  line-height: 1.15;
+  text-align: center;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 360px) {
+  .bottom-nav-btn .bn-label { font-size: 9px; }
+  .bottom-nav-btn .bn-icon { font-size: 17px; }
 }
 
 .bottom-nav-btn.active {
@@ -933,6 +946,10 @@ select:focus, input:focus {
 .modal {
   width: min(94vw, 420px);
   max-height: 86vh;
+  /* dvh tracks the visible viewport on mobile (address bar / keyboard),
+     so the bottom of a long modal isn't hidden behind browser chrome. */
+  max-height: 86dvh;
+  overscroll-behavior: contain;
   overflow-y: auto;
   overflow-x: hidden;
   background: var(--card);
@@ -2305,4 +2322,27 @@ select:focus, input:focus {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+/* -------- Touch devices --------
+   iOS Safari zooms the whole page when a focused field's font is under
+   16px, and doesn't zoom back out. 16px on touch screens prevents that. */
+@media (hover: none) and (pointer: coarse) {
+  select, input[type="number"], input[type="email"], input[type="password"], input[type="text"] {
+    font-size: 16px;
+  }
+}
+
+/* -------- Quran text font --------
+   Ayah text (question, answer choices, search results) is full Uthmani
+   script with Quranic pause/recitation marks (ۚ ۖ ۗ ۛ …). The UI font
+   (Tajawal) has no glyphs for those, so on systems without a fallback
+   Arabic font they showed up as empty boxes. Use the same self-hosted
+   Quran font the Mushaf reader uses; Tajawal stays as fallback for
+   anything else (digits, Latin). */
+.mcq-card .text,
+.mcq-choice,
+.quran-search-result-text {
+  font-family: 'Amiri Quran', 'Tajawal', serif;
+  font-weight: 400;
+  line-height: 2;
 }

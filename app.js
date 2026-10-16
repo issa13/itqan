@@ -248,7 +248,6 @@ let timerDurationMs = 0;
 
 // Caches
 const pageCache = new Map();
-let surahCatalogPromise = null;
 
 // Locally-derived Quran text index (see derive-quran-index.js and
 // download-mushaf-layout.sh) — replaces alquran.cloud entirely for
@@ -316,10 +315,11 @@ function shuffle(arr) {
 function showAchievementToast(info) {
   const el = document.createElement("div");
   el.className = "achievement-toast";
+  el.setAttribute("role", "status");
   el.innerHTML =
-    `<span class="achievement-toast-icon">${info.icon || "🏅"}</span>` +
+    `<span class="achievement-toast-icon">${escapeChallengeHtml(info.icon || "🏅")}</span>` +
     `<div><div class="achievement-toast-title">إنجاز جديد!</div>` +
-    `<div class="achievement-toast-name">${(info.title || "").toString()}</div></div>`;
+    `<div class="achievement-toast-name">${escapeChallengeHtml(info.title || "")}</div></div>`;
   document.body.appendChild(el);
   requestAnimationFrame(() => el.classList.add("show"));
   setTimeout(() => {
@@ -403,6 +403,27 @@ function resolveRangeBounds(rangeKey, customMinRaw, customMaxRaw) {
 function showHideCustomRange() {
   customRangeRow.style.display = (rangeSelect.value === "custom") ? "flex" : "none";
 }
+
+// Rewrites a "من صفحة / إلى صفحة" pair in place to a valid range
+// (integers, clamped to 1–604, swapped if reversed) so what the user
+// sees always matches what will actually be used.
+function normalizeCustomRangeInputs(minEl, maxEl) {
+  const { minP, maxP } = resolveRangeBounds("custom", minEl.value, maxEl.value);
+  minEl.value = minP;
+  maxEl.value = maxP;
+}
+[
+  [customMinEl, customMaxEl],
+  [document.getElementById("challengeCustomMin"), document.getElementById("challengeCustomMax")],
+  [document.getElementById("duelCustomMin"), document.getElementById("duelCustomMax")],
+  [document.getElementById("selfCustomMin"), document.getElementById("selfCustomMax")],
+].forEach(([minEl, maxEl]) => {
+  if (!minEl || !maxEl) return;
+  // Registered before every other "change" listener on these inputs,
+  // so validation code downstream always reads the normalised values.
+  minEl.addEventListener("change", () => normalizeCustomRangeInputs(minEl, maxEl));
+  maxEl.addEventListener("change", () => normalizeCustomRangeInputs(minEl, maxEl));
+});
 rangeSelect.addEventListener("change", showHideCustomRange);
 showHideCustomRange();
 
@@ -678,10 +699,11 @@ async function fetchPageAyahs(page) {
 
 // Fetches the full 114-surah list once (number + name + ayah count +
 // start page), from our own derived index — cached forever.
+// fetchLocalSurahIndex() already caches on success and clears its cache
+// on failure, so a transient error is retried next call instead of
+// being remembered forever.
 function fetchSurahCatalog() {
-  if (surahCatalogPromise) return surahCatalogPromise;
-  surahCatalogPromise = fetchLocalSurahIndex();
-  return surahCatalogPromise;
+  return fetchLocalSurahIndex();
 }
 
 // Exact list of surah names whose pages overlap [minP, maxP]. Surahs
@@ -2701,8 +2723,8 @@ async function onDuelStateChangedDuringPlay(duel) {
   }
 }
 
-async function loadDuelCurrentQuestion(duel) {
-  duelFlashcardWrap.scrollIntoView({ behavior: "smooth", block: "start" });
+async function loadDuelCurrentQuestion(duel, attempt = 0) {
+  if (attempt === 0) duelFlashcardWrap.scrollIntoView({ behavior: "smooth", block: "start" });
 
   duelAnswered = false;
   duelRoundStatus.style.display = "none";
@@ -2711,8 +2733,18 @@ async function loadDuelCurrentQuestion(duel) {
   duelAudioStop();
 
   const q = await fetchDuelQuestion(duel.id, duel.current_question_index);
+  // The duel may have ended / been left while we were waiting.
+  if (duelId !== duel.id) return;
   if (!q) {
-    setTimeout(() => loadDuelCurrentQuestion(duel), 800); // transient fetch hiccup — retry shortly
+    if (attempt >= 10) {
+      // Give up retrying; the claim-forfeit button and the realtime
+      // subscription remain available, so the player isn't stuck.
+      duelRoundStatus.style.display = "block";
+      duelRoundStatus.className = "duel-round-status timeout";
+      duelRoundStatus.textContent = "تعذّر تحميل السؤال. تحقق من الاتصال بالإنترنت.";
+      return;
+    }
+    setTimeout(() => loadDuelCurrentQuestion(duel, attempt + 1), 800); // transient fetch hiccup — retry shortly
     return;
   }
   duelCurrentQuestion = q;
@@ -3868,14 +3900,22 @@ function currentSettingsPayload() {
   };
 }
 
+function selectHasOption(selectEl, value) {
+  return Array.from(selectEl.options).some((o) => o.value === String(value));
+}
+
+// Remote values are only applied if the UI actually offers them — a
+// stale or hand-edited row (e.g. a timer value that was removed from
+// the list) would otherwise leave a <select> with no valid selection.
 function applyRemoteSettings(settings) {
   if (!settings) return;
   settingsSyncReady = false;
-  if (settings.question_type) qTypeSelect.value = settings.question_type;
-  if (settings.timer_seconds != null) timerSelect.value = String(settings.timer_seconds);
-  if (settings.range_key) rangeSelect.value = settings.range_key;
-  if (settings.custom_min != null) customMinEl.value = settings.custom_min;
-  if (settings.custom_max != null) customMaxEl.value = settings.custom_max;
+  if (settings.question_type && selectHasOption(qTypeSelect, settings.question_type)) qTypeSelect.value = settings.question_type;
+  if (settings.timer_seconds != null && selectHasOption(timerSelect, settings.timer_seconds)) timerSelect.value = String(settings.timer_seconds);
+  if (settings.range_key && selectHasOption(rangeSelect, settings.range_key)) rangeSelect.value = settings.range_key;
+  const bounds = resolveRangeBounds("custom", settings.custom_min, settings.custom_max);
+  customMinEl.value = bounds.minP;
+  customMaxEl.value = bounds.maxP;
   showHideCustomRange();
   settingsSyncReady = true;
 }

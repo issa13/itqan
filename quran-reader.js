@@ -96,59 +96,116 @@ function toArabicDigits(n) {
   return String(n).split("").map((d) => (map[+d] !== undefined ? map[+d] : d)).join("");
 }
 
-// Strips Arabic diacritics (tashkeel/harakat) from a search query so
-// it matches regardless of whether the person typed them — the search
-// edition itself has none, so leaving them in would just fail to match.
-function stripArabicDiacritics(s) {
-  return (s || "").replace(/[\u0610-\u061A\u064B-\u065F\u06D6-\u06DC\u06DF-\u06E8\u06EA-\u06ED\u0670]/g, "");
+// ============================================================
+// Arabic search normalisation
+//
+// The index text is full Uthmani script, which spells many words
+// differently from how people type them: ٱ (alef wasla) instead of ا,
+// tatweel + dagger alef (ـٰ) for a long "a" (ٱلرَّحْمَـٰنِ, ٱلسَّمَـٰوَٰتِ),
+// وٰ for alef (ٱلصَّلَوٰةَ), a standalone hamza before alef (ءَامَنُوا۟),
+// plus pause/recitation marks. A regex over the raw text could not
+// match most everyday queries ("الله" found 2 ayahs, "الرحمن" none).
+//
+// Instead, both the query and each ayah are reduced to a plain
+// skeleton (no diacritics/marks/spaces, unified letter forms), and the
+// match runs on that. Each ayah gets two skeletons — dagger alef
+// dropped / وٰ read as ا (الرحمن، الصلاة) and every dagger alef read as ا
+// (السماوات) — and matches if either contains the query. An index map back to the original
+// characters lets matches still be highlighted in the real text.
+// ============================================================
+const AR_IGNORABLE = /[ؐ-ًؚ-ٟـۖ-ۭء\s]/;
+const AR_LETTER_MAP = {
+  "ٱ": "ا", "أ": "ا", "إ": "ا", "آ": "ا", "ٲ": "ا", "ٳ": "ا",
+  "ى": "ي", "ئ": "ي", "ی": "ي",
+  "ؤ": "و",
+  "ة": "ه",
+};
+const AR_DAGGER_ALEF = "ٰ";
+
+// -> { text: skeleton, map: [original index for each skeleton char] }
+function arabicSkeleton(input, daggerAsAlef) {
+  const src = input || "";
+  const out = [];
+  const map = [];
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === AR_DAGGER_ALEF) {
+      if (daggerAsAlef) {
+        // read every dagger alef as a written ا (ٱلسَّمَـٰوَٰتِ -> السماوات)
+        if (out[out.length - 1] !== "ا") { out.push("ا"); map.push(i); }
+      } else if (out[out.length - 1] === "و") {
+        // وٰ is a long alef written on a waw (ٱلصَّلَوٰةَ -> الصلاة)
+        out[out.length - 1] = "ا";
+      }
+      continue;
+    }
+    if (AR_IGNORABLE.test(ch)) continue;
+    const mapped = AR_LETTER_MAP[ch] || ch;
+    // Collapse a doubled alef (e.g. يَـٰٓأَيُّهَا -> "يايها" either way it's typed).
+    if (mapped === "ا" && out[out.length - 1] === "ا") continue;
+    out.push(mapped);
+    map.push(i);
+  }
+  return { text: out.join(""), map };
 }
 
-// Builds a regex that matches a (diacritic-stripped) query against
-// full-tashkeel Uthmani text — necessary because the page always
-// displays complete diacritics while search itself is diacritic-free.
-// Also tolerates the common Arabic spelling variants (أ/إ/آ vs ا,
-// ى vs ي, ة vs ه) so a search doesn't miss a real match just because
-// it was typed with a different (but equivalent) letter form. Used
-// both to double-check a result actually contains the text (the
-// search API's own matches aren't always literal substrings) and to
-// highlight it wherever it's shown.
-function buildArabicHighlightRegex(query) {
-  const cleaned = stripArabicDiacritics(query).trim();
-  if (!cleaned) return null;
-  const equivalents = {
-    "ا": "[اأإآ]", "أ": "[اأإآ]", "إ": "[اأإآ]", "آ": "[اأإآ]",
-    "ى": "[ىي]", "ي": "[ىي]",
-    "ة": "[ةه]", "ه": "[ةه]",
-  };
-  const diacriticsGap = "[\\u0610-\\u061A\\u064B-\\u065F\\u06D6-\\u06ED\\u0670]*";
-  const pattern = cleaned.split("").map((ch) => {
-    const escaped = ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return equivalents[ch] || escaped;
-  }).join(diacriticsGap);
+function normalizeArabicQuery(q) {
+  return arabicSkeleton(q, false).text;
+}
 
-  try {
-    return new RegExp(pattern, "g");
-  } catch (e) {
-    return null;
+// Cached per ayah object (the index is loaded once and never mutated).
+const quranSkeletonCache = new WeakMap();
+function ayahSkeletons(text, cacheKey) {
+  if (cacheKey && quranSkeletonCache.has(cacheKey)) return quranSkeletonCache.get(cacheKey);
+  const pair = [arabicSkeleton(text, false), arabicSkeleton(text, true)];
+  if (cacheKey) quranSkeletonCache.set(cacheKey, pair);
+  return pair;
+}
+
+// Returns [[start, end), ...] ranges in the ORIGINAL text, or [] if no match.
+function findArabicMatches(text, normQuery, cacheKey) {
+  if (!normQuery) return [];
+  for (const sk of ayahSkeletons(text, cacheKey)) {
+    const ranges = [];
+    let from = 0;
+    let idx;
+    while ((idx = sk.text.indexOf(normQuery, from)) !== -1) {
+      const start = sk.map[idx];
+      let end = sk.map[idx + normQuery.length - 1] + 1;
+      // extend over trailing diacritics so the whole letter is highlighted
+      while (end < text.length && AR_IGNORABLE.test(text[end]) && !/\s/.test(text[end])) end++;
+      ranges.push([start, end]);
+      from = idx + normQuery.length;
+    }
+    if (ranges.length) return ranges;
   }
+  return [];
 }
 
 // Escapes each text segment individually and wraps matches in <mark>
 // — never runs escaping on already-built HTML, so this stays safe.
-function highlightArabicText(text, regex) {
-  if (!regex) return escapeQuranHtml(text);
-  regex.lastIndex = 0;
+function highlightArabicText(text, normQuery, cacheKey) {
+  const ranges = findArabicMatches(text, normQuery, cacheKey);
+  if (!ranges.length) return escapeQuranHtml(text);
   let result = "";
-  let lastIndex = 0;
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    if (match[0].length === 0) { regex.lastIndex += 1; continue; }
-    result += escapeQuranHtml(text.slice(lastIndex, match.index));
-    result += `<mark class="quran-highlight">${escapeQuranHtml(match[0])}</mark>`;
-    lastIndex = match.index + match[0].length;
+  let last = 0;
+  for (const [a, b] of ranges) {
+    if (a < last) continue;
+    result += escapeQuranHtml(text.slice(last, a));
+    result += `<mark class="quran-highlight">${escapeQuranHtml(text.slice(a, b))}</mark>`;
+    last = b;
   }
-  result += escapeQuranHtml(text.slice(lastIndex));
-  return result;
+  return result + escapeQuranHtml(text.slice(last));
+}
+
+// Mushaf pages render one <span> per word, so a multi-word query can't
+// be highlighted as one run there. Within the target ayah, a word is
+// marked if it's part of the query (or the query is part of it).
+function wordMatchesQuery(wordText, normQuery) {
+  if (!normQuery) return false;
+  return ayahSkeletons(wordText).some(({ text }) =>
+    text.length >= 2 && (normQuery.includes(text) || text.includes(normQuery))
+  );
 }
 
 // Resolves the true page (and authoritative global ayah number) for a
@@ -159,7 +216,7 @@ function highlightArabicText(text, regex) {
 // line-layout dataset) identifies ayahs this way, not by a global
 // ayah number, so highlighting keys off the same thing.
 let quranHighlightAyahKey = null;
-let quranHighlightRegex = null;
+let quranHighlightQuery = null; // normalised query (see normalizeArabicQuery)
 
 // A direct static-file URL — no API call needed. everyayah.com serves
 // every reciter's audio as plain files named {surah:03d}{ayah:03d}.mp3
@@ -199,9 +256,16 @@ function resizeQuranShell() {
   fitMushafPage();
 }
 
+// 16px is the preferred size; minFont is the floor used only when a
+// line genuinely can't fit (≈320–360px-wide phones). It used to be 16
+// as well, which disabled shrinking entirely — dense pages then had
+// their line ends clipped off-screen on small phones.
+const QURAN_MAX_FONT_PX = 16;
+const QURAN_MIN_FONT_PX = 11;
+
 function fitMushafPage() {
   if (!quranPageContent) return;
-  const maxFont = 16, minFont = 16;
+  const maxFont = QURAN_MAX_FONT_PX, minFont = QURAN_MIN_FONT_PX;
   let fontSize = maxFont;
 
   quranPageContent.style.fontSize = fontSize + "px";
@@ -375,8 +439,8 @@ function renderMushafWordHtml(word) {
   const ayahNum = parseInt(ayahStr, 10) || null;
   const isTarget = surahNum && ayahNum && quranHighlightAyahKey === `${surahNum}:${ayahNum}`;
 
-  const textHtml = (isTarget && quranHighlightRegex)
-    ? highlightArabicText(text, quranHighlightRegex)
+  const textHtml = (isTarget && quranHighlightQuery && wordMatchesQuery(text, quranHighlightQuery))
+    ? `<mark class="quran-highlight">${escapeQuranHtml(text)}</mark>`
     : escapeQuranHtml(text);
 
   let html = `<span class="quran-word${isTarget ? " quran-ayah-target" : ""}">${textHtml}</span>`;
@@ -499,14 +563,17 @@ async function startQuizFromQuranRange(range, suggestedTitle) {
 }
 
 // -------- navigation --------
+let quranNavToken = 0;
+
 async function quranGoToPage(page, options) {
   options = options || {};
   page = clamp(parseInt(page, 10) || 1, 1, 604); // clamp() reused from app.js
+  const myToken = ++quranNavToken;
   currentQuranPage = page;
   quranStopAudio();
   if (!options.preserveHighlight) {
     quranHighlightAyahKey = null;
-    quranHighlightRegex = null;
+    quranHighlightQuery = null;
   }
   try { localStorage.setItem(QURAN_LAST_PAGE_KEY, String(page)); } catch (e) { /* ignore */ }
 
@@ -518,9 +585,11 @@ async function quranGoToPage(page, options) {
   quranPageContent.innerHTML = '<div class="status">جاري التحميل...</div>';
   try {
     const data = await fetchMushafPageLayout(page);
+    if (myToken !== quranNavToken) return; // the user already moved to another page
     quranCurrentPageContextLabel = computeQuranPageContextLabel(data);
     quranPageContent.innerHTML = buildMushafPageHtml(data);
   } catch (e) {
+    if (myToken !== quranNavToken) return;
     quranCurrentPageContextLabel = "";
     quranPageContent.innerHTML =
       '<div class="status">تعذّر تحميل الصفحة. تأكد من رفع مجلد mushaf-layout بشكل صحيح، ثم حاول مرة أخرى.</div>';
@@ -629,7 +698,7 @@ quranSurahSelect.addEventListener("change", async () => {
 // with a missing surah the way the old API-backed search sometimes did.
 let quranSearchDebounceTimer = null;
 let quranSearchAllMatches = [];   // full match list (from the local index) for the current query
-let quranSearchRegexCurrent = null;
+let quranSearchQueryCurrent = "";
 let quranSearchRenderedCount = 0;
 const QURAN_SEARCH_PAGE_SIZE = 20;
 
@@ -645,28 +714,26 @@ quranSearchInput.addEventListener("input", () => {
   quranSearchDebounceTimer = setTimeout(() => runQuranSearch(q), 300);
 });
 
+let quranSearchRunToken = 0;
+
 async function runQuranSearch(keyword) {
-  const cleaned = stripArabicDiacritics(keyword).trim();
-  if (!cleaned) {
-    quranSearchResults.innerHTML = "";
+  const myToken = ++quranSearchRunToken;
+  const normQuery = normalizeArabicQuery(keyword);
+  if (normQuery.length < 2) {
+    quranSearchResults.innerHTML = normQuery ? '<div class="status">اكتب حرفين على الأقل.</div>' : "";
     quranSearchResultsSummary.style.display = "none";
     quranSearchAllMatches = [];
-    return;
-  }
-  const regex = buildArabicHighlightRegex(keyword);
-  if (!regex) {
-    quranSearchResultsSummary.style.display = "none";
-    quranSearchResults.innerHTML = '<div class="status">لا توجد نتائج.</div>';
     return;
   }
   quranSearchResultsSummary.style.display = "none";
   quranSearchResults.innerHTML = '<div class="status">جاري البحث...</div>';
   try {
     const allAyahs = await fetchLocalAyahIndex(); // from app.js — cached after the first call
-    const filtered = allAyahs.filter((a) => { regex.lastIndex = 0; return regex.test(a.text || ""); });
+    if (myToken !== quranSearchRunToken) return; // a newer search started meanwhile
+    const filtered = allAyahs.filter((a) => findArabicMatches(a.text || "", normQuery, a).length > 0);
 
     quranSearchAllMatches = filtered;
-    quranSearchRegexCurrent = regex;
+    quranSearchQueryCurrent = normQuery;
     quranSearchRenderedCount = 0;
     quranSearchResults.innerHTML = "";
 
@@ -696,14 +763,14 @@ function appendNextQuranSearchResultsBatch() {
   const end = Math.min(quranSearchAllMatches.length, start + QURAN_SEARCH_PAGE_SIZE);
   if (start >= end) return;
 
-  const regex = quranSearchRegexCurrent;
+  const normQuery = quranSearchQueryCurrent;
   const batch = quranSearchAllMatches.slice(start, end);
   const html = batch.map((a, i) => {
     const globalIdx = start + i;
     return `
       <div class="quran-search-result" data-idx="${globalIdx}" data-surah="${a.surah}" data-ayah-in-surah="${a.ayah}" data-page="${a.page}">
         <div class="quran-search-result-loc">${escapeQuranHtml(a.surahName)} — آية ${toArabicDigits(a.ayah)}</div>
-        <div class="quran-search-result-text">${highlightArabicText(a.text || "", regex)}</div>
+        <div class="quran-search-result-text">${highlightArabicText(a.text || "", normQuery, a)}</div>
       </div>`;
   }).join("");
 
@@ -711,11 +778,11 @@ function appendNextQuranSearchResultsBatch() {
   quranSearchRenderedCount = end;
 
   Array.from(quranSearchResults.querySelectorAll(".quran-search-result")).slice(start).forEach((row) => {
-    wireQuranSearchResultRow(row, regex);
+    wireQuranSearchResultRow(row, normQuery);
   });
 }
 
-function wireQuranSearchResultRow(row, regex) {
+function wireQuranSearchResultRow(row, normQuery) {
   row.addEventListener("click", () => {
     const surahNumber = parseInt(row.dataset.surah, 10) || null;
     const ayahInSurah = parseInt(row.dataset.ayahInSurah, 10) || null;
@@ -728,7 +795,7 @@ function wireQuranSearchResultRow(row, regex) {
 
     if (page && surahNumber && ayahInSurah) {
       quranHighlightAyahKey = `${surahNumber}:${ayahInSurah}`;
-      quranHighlightRegex = regex;
+      quranHighlightQuery = normQuery;
       quranGoToPage(page, { preserveHighlight: true });
     }
   });
@@ -745,11 +812,17 @@ quranSearchResults.addEventListener("scroll", () => {
 });
 
 // -------- bookmarks (multiple, named — localStorage only, guest-friendly) --------
+const QURAN_BOOKMARKS_MAX = 100;
+
+// localStorage is user-editable, so every entry is validated before use.
 function loadQuranBookmarks() {
   try {
     const raw = localStorage.getItem(QURAN_BOOKMARKS_KEY);
     const list = raw ? JSON.parse(raw) : [];
-    return Array.isArray(list) ? list : [];
+    if (!Array.isArray(list)) return [];
+    return list.filter((b) =>
+      b && typeof b.id === "string" && Number.isInteger(b.page) && b.page >= 1 && b.page <= 604
+    ).map((b) => ({ ...b, label: String(b.label || `صفحة ${b.page}`).slice(0, 40), context: String(b.context || "") }));
   } catch (e) {
     return [];
   }
@@ -767,7 +840,7 @@ function renderQuranBookmarksList() {
   }
 
   quranBookmarksList.innerHTML = list.map((b) => `
-    <div class="quran-bookmark-row" data-id="${b.id}">
+    <div class="quran-bookmark-row" data-id="${escapeQuranHtml(b.id)}">
       <div class="quran-bookmark-info">
         <div class="quran-bookmark-name">${escapeQuranHtml(b.label)}</div>
         <div class="quran-bookmark-loc">صفحة ${toArabicDigits(b.page)}${b.context ? " — " + escapeQuranHtml(b.context) : ""}</div>
@@ -796,8 +869,8 @@ function renderQuranBookmarksList() {
 }
 
 quranAddBookmarkBtn.addEventListener("click", () => {
-  const label = quranBookmarkNameInput.value.trim() || `صفحة ${currentQuranPage}`;
-  const list = loadQuranBookmarks();
+  const label = quranBookmarkNameInput.value.replace(/\s+/g, " ").trim().slice(0, 40) || `صفحة ${currentQuranPage}`;
+  const list = loadQuranBookmarks().slice(0, QURAN_BOOKMARKS_MAX - 1);
   list.unshift({
     id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     label,
@@ -926,6 +999,7 @@ async function buildQuranRangeQueue(fromSurah, fromAyah, toSurah, toAyah) {
 
 let quranRangeQueue = [];
 let quranRangeIndex = -1;
+let quranRangeFailures = 0; // consecutive failed ayahs — stops the loop when offline
 let quranRangeAudioEl = null;
 let quranRangePaused = false;
 
@@ -1007,9 +1081,17 @@ async function quranPlayNextInRange() {
       if (!quranRangePaused) quranPlayNextInRange();
     });
     await quranRangeAudioEl.play();
+    quranRangeFailures = 0;
 
     quranRangeEnsurePreload(quranRangeIndex);
   } catch (e) {
+    if (!quranRangeQueue.length) return; // stopped meanwhile
+    quranRangeFailures += 1;
+    if (quranRangeFailures >= 3) {
+      quranListenNowPlaying.textContent = "تعذّر تشغيل التلاوة. تحقق من اتصالك بالإنترنت ثم حاول مرة أخرى.";
+      quranRangeFailures = 0;
+      return;
+    }
     quranListenNowPlaying.textContent = "تعذّر تشغيل أحد المقاطع، جارٍ المتابعة...";
     quranPlayNextInRange(); // skip the failed ayah and continue
   }
@@ -1020,6 +1102,7 @@ function quranRangeStop() {
   quranRangeClearPreload();
   quranRangeQueue = [];
   quranRangeIndex = -1;
+  quranRangeFailures = 0;
   quranRangePaused = false;
   quranListenPlayer.style.display = "none";
   quranListenNowPlaying.textContent = "";
@@ -1054,8 +1137,10 @@ quranListenStartBtn.addEventListener("click", async () => {
     return;
   }
 
+  quranStopAudio();
   quranRangeQueue = await buildQuranRangeQueue(fromSurah, fromAyah, toSurah, toAyah);
   quranRangeIndex = -1;
+  quranRangeFailures = 0;
   quranRangePaused = false;
   quranRangeClearPreload();
   quranListenPlayer.style.display = "block";
@@ -1076,6 +1161,21 @@ quranListenPauseBtn.addEventListener("click", () => {
 });
 
 quranListenStopBtn.addEventListener("click", quranRangeStop);
+
+// Keeps each "الآية" number input's max in step with its surah, so the
+// browser's own spinner can't go past the last ayah.
+async function syncListenAyahMax(surahSelect, ayahInput) {
+  const n = parseInt(surahSelect.value, 10);
+  if (!n) return;
+  const info = (await getQuranCatalogMap()).get(n);
+  if (!info) return;
+  ayahInput.max = String(info.numberOfAyahs);
+  const v = parseInt(ayahInput.value, 10);
+  if (!v || v < 1) ayahInput.value = 1;
+  else if (v > info.numberOfAyahs) ayahInput.value = info.numberOfAyahs;
+}
+quranListenFromSurah.addEventListener("change", () => syncListenAyahMax(quranListenFromSurah, quranListenFromAyah));
+quranListenToSurah.addEventListener("change", () => syncListenAyahMax(quranListenToSurah, quranListenToAyah));
 
 // -------- ⋮ menu + modals --------
 const QURAN_MODAL_IDS = ["quranSearchModal", "quranGoToModal", "quranBookmarksModal", "quranReciterModal", "quranListenModal"];
@@ -1108,6 +1208,18 @@ QURAN_MODAL_IDS.forEach((id) => {
   overlay.querySelectorAll("[data-close-modal]").forEach((btn) => {
     btn.addEventListener("click", () => closeQuranModal(btn.dataset.closeModal));
   });
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  QURAN_MODAL_IDS.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el && el.style.display !== "none") closeQuranModal(id);
+  });
+  if (quranMenuDropdown.style.display === "flex") {
+    quranMenuDropdown.style.display = "none";
+    quranMenuBtn.setAttribute("aria-expanded", "false");
+  }
 });
 
 quranMenuBtn.addEventListener("click", (e) => {

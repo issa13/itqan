@@ -220,6 +220,10 @@ function pickQAFromPage(ayahs: Ayah[], type: string, page: number): QA | null {
     const idx = randInt(1, ayahs.length - 1);
     return { q: clean(ayahs[idx].text), a: clean(ayahs[idx - 1].text), kind: "text", qAyahNumber: ayahs[idx].number };
   }
+  if (type === "next") {
+    const idx = randInt(0, ayahs.length - 2);
+    return { q: clean(ayahs[idx].text), a: clean(ayahs[idx + 1].text), kind: "text", qAyahNumber: ayahs[idx].number };
+  }
   if (type === "surah") {
     const candidate = ayahs[randInt(0, ayahs.length - 1)];
     return { q: clean(candidate.text), a: getSurahName(candidate), kind: "surah", qAyahNumber: candidate.number };
@@ -424,19 +428,27 @@ async function generateOneQuestion(
 }
 
 // -------- HTTP handler --------
-Deno.serve(async (req: Request) => {
-  const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  };
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
 
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    const { duelId } = await req.json();
-    if (!duelId) {
+    if (req.method !== "POST") {
+      return new Response(JSON.stringify({ ok: false, error: "method_not_allowed" }), {
+        status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const body = await req.json().catch(() => ({}));
+    const duelId = Number(body?.duelId);
+    if (!Number.isSafeInteger(duelId) || duelId <= 0) {
       return new Response(JSON.stringify({ ok: false, error: "missing_duel_id" }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -522,7 +534,15 @@ Deno.serve(async (req: Request) => {
 
     const { error: insertErr } = await admin.from("duel_questions").insert(rows);
     if (insertErr) {
-      return new Response(JSON.stringify({ ok: false, error: "insert_failed", detail: insertErr.message }), {
+      // 23505 = unique violation: a concurrent call (double tap, refresh)
+      // already inserted this duel's questions — not a failure.
+      if (insertErr.code === "23505") {
+        return new Response(JSON.stringify({ ok: true, alreadyGenerated: true }), {
+          status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      console.error("duel_questions insert failed", insertErr);
+      return new Response(JSON.stringify({ ok: false, error: "insert_failed" }), {
         status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -543,7 +563,8 @@ Deno.serve(async (req: Request) => {
       .eq("status", "accepted"); // guard against a double-call race
 
     if (updateErr) {
-      return new Response(JSON.stringify({ ok: false, error: "activate_failed", detail: updateErr.message }), {
+      console.error("duel activate failed", updateErr);
+      return new Response(JSON.stringify({ ok: false, error: "activate_failed" }), {
         status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -552,8 +573,10 @@ Deno.serve(async (req: Request) => {
       status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
-    return new Response(JSON.stringify({ ok: false, error: "unexpected", detail: String(e) }), {
-      status: 500, headers: { "Content-Type": "application/json" },
+    // Internal details go to the function logs, not to the browser.
+    console.error("generate-duel-questions unexpected error", e);
+    return new Response(JSON.stringify({ ok: false, error: "unexpected" }), {
+      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

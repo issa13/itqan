@@ -145,6 +145,9 @@ function setAuthMode(mode) {
   signupNameField.style.display = mode === "signup" ? "flex" : "none";
   authModalTitle.textContent = mode === "login" ? "تسجيل الدخول" : "حساب جديد";
   authSubmitBtn.textContent = mode === "login" ? "دخول" : "إنشاء الحساب";
+  // Lets password managers offer "save new password" on signup and
+  // autofill the existing one on login.
+  authPassword.setAttribute("autocomplete", mode === "login" ? "current-password" : "new-password");
   resetAuthModalView();
 }
 
@@ -167,6 +170,9 @@ profileLoginBtn.addEventListener("click", openLoginModal);
 
 authCloseBtn.addEventListener("click", () => hideModal(authModal));
 authModal.addEventListener("click", (e) => { if (e.target === authModal) hideModal(authModal); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && authModal.style.display !== "none") hideModal(authModal);
+});
 
 authSuccessOkBtn.addEventListener("click", () => {
   setAuthMode("login");
@@ -174,15 +180,40 @@ authSuccessOkBtn.addEventListener("click", () => {
   authPassword.value = "";
 });
 
-authSubmitBtn.addEventListener("click", async () => {
-  if (!isConfigured) return;
+// Client-side checks only improve the UX (instant, translated feedback);
+// Supabase Auth and the DB constraints in supabase-schema.sql are what
+// actually enforce these rules.
+const AUTH_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const AUTH_MIN_PASSWORD = 6;
+const AUTH_MAX_NAME = 30;
 
-  const email = authEmail.value.trim();
+function showAuthError(msg) {
+  authError.textContent = msg;
+  authError.style.display = "block";
+}
+
+function validateAuthForm(email, password, name) {
+  if (!email || !password) return "الرجاء إدخال البريد الإلكتروني وكلمة المرور.";
+  if (!AUTH_EMAIL_RE.test(email)) return "صيغة البريد الإلكتروني غير صحيحة.";
+  if (authMode === "signup") {
+    if (password.length < AUTH_MIN_PASSWORD) return `كلمة المرور يجب أن تكون ${AUTH_MIN_PASSWORD} أحرف على الأقل.`;
+    if (!name) return "الرجاء إدخال اسم معروض.";
+    if (name.length > AUTH_MAX_NAME) return `الاسم المعروض يجب ألا يتجاوز ${AUTH_MAX_NAME} حرفًا.`;
+  }
+  return null;
+}
+
+authFormFields.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!isConfigured || authSubmitBtn.disabled) return;
+
+  const email = authEmail.value.trim().toLowerCase();
   const password = authPassword.value;
+  const name = authName.value.replace(/\s+/g, " ").trim();
 
-  if (!email || !password) {
-    authError.textContent = "الرجاء إدخال البريد الإلكتروني وكلمة المرور.";
-    authError.style.display = "block";
+  const invalid = validateAuthForm(email, password, name);
+  if (invalid) {
+    showAuthError(invalid);
     return;
   }
 
@@ -191,7 +222,7 @@ authSubmitBtn.addEventListener("click", async () => {
 
   try {
     if (authMode === "signup") {
-      const result = await signUp(email, password, authName.value.trim());
+      const result = await signUp(email, password, name);
 
       if (result && result.session) {
         // Email confirmation is off — user is already signed in.
@@ -214,8 +245,7 @@ authSubmitBtn.addEventListener("click", async () => {
       authPassword.value = "";
     }
   } catch (err) {
-    authError.textContent = translateAuthError(err.message);
-    authError.style.display = "block";
+    showAuthError(translateAuthError(err && err.message));
   } finally {
     authSubmitBtn.disabled = false;
   }
@@ -227,7 +257,12 @@ function translateAuthError(msg) {
   if (msg.includes("Email not confirmed")) return "لم يتم تفعيل البريد الإلكتروني بعد. تحقق من صندوق الوارد لديك.";
   if (msg.includes("Invalid login")) return "بيانات الدخول غير صحيحة.";
   if (msg.includes("Password should be")) return "كلمة المرور يجب أن تكون 6 أحرف على الأقل.";
-  return msg;
+  if (/rate limit|too many/i.test(msg)) return "محاولات كثيرة خلال وقت قصير. انتظر قليلًا ثم حاول مرة أخرى.";
+  if (/invalid.*email|email.*invalid/i.test(msg)) return "صيغة البريد الإلكتروني غير صحيحة.";
+  if (/fetch|network/i.test(msg)) return "تعذّر الاتصال بالخادم. تحقق من الإنترنت وحاول مرة أخرى.";
+  // Anything else: a generic message rather than raw server text.
+  console.error("auth error:", msg);
+  return "حدث خطأ أثناء تسجيل الدخول. حاول مرة أخرى.";
 }
 
 logoutBtn.addEventListener("click", async () => {
@@ -915,7 +950,7 @@ function buildBadgesGridHtml(catalog, earnedCodes) {
       const isEarned = earnedCodes.has(b.code);
       return `
         <div class="badge-item${isEarned ? " earned" : " locked"}">
-          <div class="badge-icon">${b.icon || "🏅"}</div>
+          <div class="badge-icon">${escapeHtml(b.icon || "🏅")}</div>
           <div class="badge-title">${escapeHtml(b.title)}</div>
           <div class="badge-desc">${escapeHtml(b.description)}</div>
         </div>`;
@@ -947,14 +982,20 @@ function renderHeatmapInto(containerEl, pageStats) {
 }
 
 function computeStreaks(dailyActivity) {
+  // Day keys are UTC dates, matching how the DB groups activity
+  // (user_daily_activity / record_attempt()'s day streak).
   const daySet = new Set((dailyActivity || []).map((d) => d.date));
   let current = 0;
   const cursor = new Date();
+  // A streak is still alive until the end of today even if today has no
+  // activity yet — count back from yesterday in that case instead of
+  // showing 0 every morning.
+  if (!daySet.has(cursor.toISOString().slice(0, 10))) cursor.setUTCDate(cursor.getUTCDate() - 1);
   for (;;) {
     const key = cursor.toISOString().slice(0, 10);
     if (!daySet.has(key)) break;
     current++;
-    cursor.setDate(cursor.getDate() - 1);
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
   }
 
   let longest = 0;
@@ -976,7 +1017,7 @@ function renderStreakInto(stripEl, numbersEl, dailyActivity) {
   let html = "";
   for (let i = 0; i <= 29; i++) {
     const d = new Date(today);
-    d.setDate(d.getDate() - i);
+    d.setUTCDate(d.getUTCDate() - i);
     const key = d.toISOString().slice(0, 10);
     const total = dayMap.get(key);
     const active = total != null;
