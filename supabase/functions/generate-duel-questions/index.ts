@@ -60,9 +60,10 @@ interface Ayah {
 interface QA {
   q: string;
   a: string;
-  kind: "text" | "surah" | "pageNumber" | "ayahCount" | "juz" | "ayahNumber";
+  kind: "text" | "firstAyah" | "lastAyah" | "surah" | "pageNumber" | "ayahCount" | "juz" | "ayahNumber";
   qAyahNumber: string | null;
   audioOnly?: boolean;
+  sourcePage?: number;
 }
 
 interface GeneratedQuestion {
@@ -210,11 +211,11 @@ function pickQAFromPage(ayahs: Ayah[], type: string, page: number): QA | null {
 
   if (type === "first") {
     const candidate = ayahs[randInt(1, ayahs.length - 1)];
-    return { q: clean(candidate.text), a: clean(first.text), kind: "text", qAyahNumber: candidate.number };
+    return { q: clean(candidate.text), a: clean(first.text), kind: "firstAyah", qAyahNumber: candidate.number, sourcePage: page };
   }
   if (type === "last") {
     const candidate = ayahs[randInt(0, ayahs.length - 2)];
-    return { q: clean(candidate.text), a: clean(last.text), kind: "text", qAyahNumber: candidate.number };
+    return { q: clean(candidate.text), a: clean(last.text), kind: "lastAyah", qAyahNumber: candidate.number, sourcePage: page };
   }
   if (type === "previous") {
     const idx = randInt(1, ayahs.length - 1);
@@ -318,6 +319,31 @@ async function pickTextDistractors(exclude: Set<string>, minP: number, maxP: num
   return results;
 }
 
+// Mirrors app.js's collectPositionalAyahTexts(): wrong answers for a
+// "first/last ayah of the page" question are the first/last ayahs of
+// OTHER pages, so the right answer can't be spotted just because it
+// looks like a page-opening/closing ayah while the others don't.
+async function collectPositionalAyahTexts(
+  position: "first" | "last", minP: number, maxP: number, excludePage: number | undefined, exclude: Set<string>, count: number,
+): Promise<string[]> {
+  const results: string[] = [];
+  const seen = new Set(exclude);
+  async function tryRange(lo: number, hi: number) {
+    const pages: number[] = [];
+    for (let p = lo; p <= hi; p++) if (p !== excludePage) pages.push(p);
+    for (const p of shuffle(pages)) {
+      if (results.length >= count) break;
+      const ayahs = await fetchPageAyahs(p);
+      if (!ayahs.length) continue;
+      const text = clean(position === "first" ? ayahs[0].text : ayahs[ayahs.length - 1].text);
+      if (text && !seen.has(text)) { seen.add(text); results.push(text); }
+    }
+  }
+  await tryRange(minP, maxP);
+  if (results.length < count) await tryRange(1, 604);
+  return results;
+}
+
 function pickNearbyNumberDistractors(correctNum: number, count: number, spread: number): string[] {
   const pool = new Set<number>();
   let widen = spread;
@@ -358,6 +384,12 @@ async function buildChoices(qa: QA, minP: number, maxP: number): Promise<{ choic
     distractors = pickNearbyNumberDistractors(parseInt(correct, 10), want, 4);
   } else if (qa.kind === "ayahNumber") {
     distractors = pickNearbyNumberDistractors(parseInt(correct, 10), want, 8);
+  } else if (qa.kind === "firstAyah" || qa.kind === "lastAyah") {
+    const exclude = new Set([qa.q, correct]);
+    distractors = await collectPositionalAyahTexts(qa.kind === "firstAyah" ? "first" : "last", minP, maxP, qa.sourcePage, exclude, want);
+    if (distractors.length < want) {
+      distractors = distractors.concat(await pickTextDistractors(new Set([...exclude, ...distractors]), minP, maxP, want - distractors.length));
+    }
   } else {
     distractors = await pickTextDistractors(new Set([qa.q, correct]), minP, maxP, want);
   }

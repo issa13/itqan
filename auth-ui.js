@@ -26,6 +26,7 @@ const authFormFields = document.getElementById("authFormFields");
 const authSuccessNotice = document.getElementById("authSuccessNotice");
 const authSuccessText = document.getElementById("authSuccessText");
 const authSuccessOkBtn = document.getElementById("authSuccessOkBtn");
+const authForgotBtn = document.getElementById("authForgotBtn");
 
 const statsBody = document.getElementById("statsBody");
 const sessionChips = document.getElementById("sessionChips");
@@ -52,6 +53,11 @@ function currentTheme() {
 
 function setThemeButtonLabel() {
   themeToggleBtn.textContent = currentTheme() === "dark" ? "☀️ فاتح" : "🌙 داكن";
+  // keep the mobile browser's address-bar colour in step with the chosen
+  // theme (the <meta> tags only know the system setting)
+  document.querySelectorAll('meta[name="theme-color"]').forEach((m) => {
+    m.setAttribute("content", currentTheme() === "dark" ? "#14180f" : "#f4efe1");
+  });
 }
 
 themeToggleBtn.addEventListener("click", () => {
@@ -93,11 +99,34 @@ const TOPBAR_TITLES = {
   profile: "👤 ملفي الشخصي",
 };
 
-function switchView(name) {
+let currentViewName = "quran";
+let myProfileNameCache = null; // the signed-in user's saved display name
+
+// options.fromHistory: called by the back/forward handler below, so it
+// must not push another history entry.
+function switchView(name, options) {
   if (!appViews[name]) return;
+  options = options || {};
+  const changed = name !== currentViewName;
+  currentViewName = name;
+
+  // Each tab is its own URL hash (#home, #profile …): the browser/phone
+  // back button returns to the previous tab instead of leaving the site,
+  // and refreshing keeps you on the same tab. (Never while the URL still
+  // carries Supabase auth parameters — see quran-reader.js's init.)
+  if (!options.fromHistory && location.hash !== "#" + name && !/access_token=|error_description=/.test(location.hash)) {
+    try { history.pushState({ view: name }, "", "#" + name); } catch (e) { /* ignore */ }
+  }
+  // A new tab starts at the top instead of inheriting the previous
+  // tab's scroll position.
+  if (changed) window.scrollTo(0, 0);
 
   Object.entries(appViews).forEach(([key, el]) => el.classList.toggle("active", key === name));
-  bottomNavButtons.forEach((btn) => btn.classList.toggle("active", btn.dataset.view === name));
+  bottomNavButtons.forEach((btn) => {
+    const on = btn.dataset.view === name;
+    btn.classList.toggle("active", on);
+    if (on) btn.setAttribute("aria-current", "page"); else btn.removeAttribute("aria-current");
+  });
 
   topbarPageTitleText.textContent = TOPBAR_TITLES[name] || "";
   // The quran ⋮ menu travels with the title, in the same topbar slot
@@ -114,11 +143,44 @@ bottomNavButtons.forEach((btn) => {
   btn.addEventListener("click", () => switchView(btn.dataset.view));
 });
 
+window.addEventListener("popstate", () => {
+  const name = location.hash.slice(1);
+  switchView(appViews[name] ? name : "quran", { fromHistory: true });
+});
+
+// Re-renders whichever tab is open — called when the signed-in user
+// changes, since every tab except Quran/اختبارات shows account data.
+// (⚔️ تحديات handles this itself — see resetChallengesForAuthChange() in app.js.)
+function refreshCurrentView() {
+  if (["profile", "friends", "leaderboard"].includes(currentViewName)) {
+    switchView(currentViewName, { fromHistory: true });
+  }
+}
+
+// Small self-dismissing confirmation at the bottom of the screen.
+function showInfoToast(text) {
+  const el = document.createElement("div");
+  el.className = "achievement-toast info-toast";
+  el.setAttribute("role", "status");
+  el.textContent = text;
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => {
+    el.classList.remove("show");
+    setTimeout(() => el.remove(), 300);
+  }, 2600);
+}
+
 let authMode = "login"; // or "signup"
 let mySessions = [];          // cached list from session_summary
 let selectedSessionId = null; // which session is shown in the stats view
 
-function showModal(el) { el.style.display = "flex"; }
+function showModal(el) {
+  el.style.display = "flex";
+  const first = el.querySelector("input:not([type=hidden])");
+  // not on touch screens: popping the keyboard up immediately is jarring there
+  if (first && window.matchMedia && !window.matchMedia("(pointer: coarse)").matches) setTimeout(() => first.focus(), 50);
+}
 function hideModal(el) { el.style.display = "none"; }
 
 // -------- auth modal --------
@@ -145,6 +207,7 @@ function setAuthMode(mode) {
   signupNameField.style.display = mode === "signup" ? "flex" : "none";
   authModalTitle.textContent = mode === "login" ? "تسجيل الدخول" : "حساب جديد";
   authSubmitBtn.textContent = mode === "login" ? "دخول" : "إنشاء الحساب";
+  authForgotBtn.style.display = mode === "login" ? "" : "none";
   // Lets password managers offer "save new password" on signup and
   // autofill the existing one on login.
   authPassword.setAttribute("autocomplete", mode === "login" ? "current-password" : "new-password");
@@ -171,10 +234,14 @@ profileLoginBtn.addEventListener("click", openLoginModal);
 authCloseBtn.addEventListener("click", () => hideModal(authModal));
 authModal.addEventListener("click", (e) => { if (e.target === authModal) hideModal(authModal); });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && authModal.style.display !== "none") hideModal(authModal);
+  if (e.key !== "Escape") return;
+  if (authModal.style.display !== "none") hideModal(authModal);
+  const npm = document.getElementById("newPasswordModal");
+  if (npm && npm.style.display !== "none") hideModal(npm);
 });
 
 authSuccessOkBtn.addEventListener("click", () => {
+  authSuccessOkBtn.textContent = "حسناً، سأسجّل الدخول بعد التفعيل";
   setAuthMode("login");
   authEmail.value = authEmail.value; // keep email prefilled for convenience
   authPassword.value = "";
@@ -217,12 +284,22 @@ authFormFields.addEventListener("submit", async (e) => {
     return;
   }
 
+  const idleLabel = authSubmitBtn.textContent;
   authSubmitBtn.disabled = true;
+  authSubmitBtn.textContent = authMode === "signup" ? "جارٍ إنشاء الحساب..." : "جارٍ تسجيل الدخول...";
   authError.style.display = "none";
 
   try {
     if (authMode === "signup") {
       const result = await signUp(email, password, name);
+
+      // With email confirmation on, Supabase doesn't reveal that an
+      // address is taken (it returns a user with no identities and sends
+      // nothing) — without this check we'd wrongly say "check your email".
+      if (result && result.user && Array.isArray(result.user.identities) && result.user.identities.length === 0) {
+        showAuthError("هذا البريد مسجّل بالفعل. جرّب تسجيل الدخول، أو استخدم «نسيت كلمة المرور؟».");
+        return;
+      }
 
       if (result && result.session) {
         // Email confirmation is off — user is already signed in.
@@ -248,6 +325,70 @@ authFormFields.addEventListener("submit", async (e) => {
     showAuthError(translateAuthError(err && err.message));
   } finally {
     authSubmitBtn.disabled = false;
+    authSubmitBtn.textContent = idleLabel;
+  }
+});
+
+// -------- forgot password --------
+authForgotBtn.addEventListener("click", async () => {
+  if (!isConfigured) return;
+  const email = authEmail.value.trim().toLowerCase();
+  if (!AUTH_EMAIL_RE.test(email)) {
+    showAuthError("اكتب بريدك الإلكتروني أولًا، ثم اضغط «نسيت كلمة المرور؟».");
+    authEmail.focus();
+    return;
+  }
+  authForgotBtn.disabled = true;
+  authError.style.display = "none";
+  try {
+    await requestPasswordReset(email);
+    authFormFields.style.display = "none";
+    authSuccessNotice.style.display = "block";
+    authSuccessText.textContent =
+      `إذا كان هناك حساب بالبريد ${email} فستصلك رسالة خلال دقائق. ` +
+      `افتح الرابط في الرسالة من هذا المتصفح لاختيار كلمة مرور جديدة.`;
+    authSuccessOkBtn.textContent = "حسناً";
+  } catch (err) {
+    showAuthError(translateAuthError(err && err.message));
+  } finally {
+    authForgotBtn.disabled = false;
+  }
+});
+
+// -------- set a new password (arrived from the reset email link) --------
+const newPasswordModal = document.getElementById("newPasswordModal");
+const newPasswordForm = document.getElementById("newPasswordForm");
+const newPasswordInput = document.getElementById("newPasswordInput");
+const newPasswordConfirm = document.getElementById("newPasswordConfirm");
+const newPasswordError = document.getElementById("newPasswordError");
+const newPasswordSubmitBtn = document.getElementById("newPasswordSubmitBtn");
+
+// Called by supabase-client.js on the PASSWORD_RECOVERY auth event.
+function onPasswordRecovery() {
+  hideModal(authModal);
+  newPasswordError.style.display = "none";
+  newPasswordInput.value = "";
+  newPasswordConfirm.value = "";
+  showModal(newPasswordModal);
+}
+
+document.getElementById("newPasswordCloseBtn").addEventListener("click", () => hideModal(newPasswordModal));
+
+newPasswordForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const pw = newPasswordInput.value;
+  const showErr = (m) => { newPasswordError.textContent = m; newPasswordError.style.display = "block"; };
+  if (pw.length < AUTH_MIN_PASSWORD) return showErr(`كلمة المرور يجب أن تكون ${AUTH_MIN_PASSWORD} أحرف على الأقل.`);
+  if (pw !== newPasswordConfirm.value) return showErr("كلمتا المرور غير متطابقتين.");
+  newPasswordSubmitBtn.disabled = true;
+  try {
+    await updatePassword(pw);
+    hideModal(newPasswordModal);
+    showInfoToast("✅ تم تغيير كلمة المرور");
+  } catch (err) {
+    showErr(translateAuthError(err && err.message));
+  } finally {
+    newPasswordSubmitBtn.disabled = false;
   }
 });
 
@@ -257,16 +398,19 @@ function translateAuthError(msg) {
   if (msg.includes("Email not confirmed")) return "لم يتم تفعيل البريد الإلكتروني بعد. تحقق من صندوق الوارد لديك.";
   if (msg.includes("Invalid login")) return "بيانات الدخول غير صحيحة.";
   if (msg.includes("Password should be")) return "كلمة المرور يجب أن تكون 6 أحرف على الأقل.";
-  if (/rate limit|too many/i.test(msg)) return "محاولات كثيرة خلال وقت قصير. انتظر قليلًا ثم حاول مرة أخرى.";
+  if (/rate limit|too many|security purposes/i.test(msg)) return "محاولات كثيرة خلال وقت قصير. انتظر قليلًا ثم حاول مرة أخرى.";
   if (/invalid.*email|email.*invalid/i.test(msg)) return "صيغة البريد الإلكتروني غير صحيحة.";
   if (/fetch|network/i.test(msg)) return "تعذّر الاتصال بالخادم. تحقق من الإنترنت وحاول مرة أخرى.";
+  if (/same.*password|different from the old/i.test(msg)) return "كلمة المرور الجديدة يجب أن تختلف عن القديمة.";
+  if (/weak|pwned/i.test(msg)) return "كلمة المرور ضعيفة جدًا. اختر كلمة مرور أقوى.";
   // Anything else: a generic message rather than raw server text.
   console.error("auth error:", msg);
   return "حدث خطأ أثناء تسجيل الدخول. حاول مرة أخرى.";
 }
 
 logoutBtn.addEventListener("click", async () => {
-  await signOut();
+  logoutBtn.disabled = true;
+  try { await signOut(); } finally { logoutBtn.disabled = false; }
 });
 
 // -------- react to auth state --------
@@ -348,7 +492,7 @@ function renderDuelInviteBanner(invite) {
   const configLine = describeDuelConfig(invite);
 
   if (invite.status === "pending") {
-    duelInviteBannerTitle.textContent = `⚔️ ${invite.from_display_name || "لاعب"} يتحداك!`;
+    duelInviteBannerTitle.textContent = `${invite.from_display_name || "لاعب"} يتحداك!`;
     duelInviteBannerDesc.textContent = configLine || "تحدٍّ مباشر — هل تقبل؟";
 
     const acceptBtn = document.createElement("button");
@@ -360,6 +504,8 @@ function renderDuelInviteBanner(invite) {
       const result = await respondDuelInvite(invite.id, true);
       if (result?.ok && typeof onDuelInviteAccepted === "function") {
         await onDuelInviteAccepted(invite.id);
+      } else {
+        alert("لم يعد هذا التحدي متاحًا (ربما ألغاه صاحبه أو انتهت صلاحيته).");
       }
     });
 
@@ -375,7 +521,7 @@ function renderDuelInviteBanner(invite) {
     duelInviteBannerActions.appendChild(acceptBtn);
     duelInviteBannerActions.appendChild(declineBtn);
   } else if (invite.status === "accepted") {
-    duelInviteBannerTitle.textContent = "⚔️ تم إيجاد خصم!";
+    duelInviteBannerTitle.textContent = "تم إيجاد خصم!";
     duelInviteBannerDesc.textContent = configLine || "اضغط للانضمام إلى المبارزة.";
 
     const joinBtn = document.createElement("button");
@@ -414,7 +560,21 @@ async function handleIncomingDuelRow(row) {
   });
 }
 
-onAuthChange(async (user) => {
+let lastAuthUserId; // undefined until the very first call
+
+onAuthChange(async (user, info) => {
+  const newId = user ? user.id : null;
+  const firstCall = lastAuthUserId === undefined;
+  const changedUser = !firstCall && newId !== lastAuthUserId;
+  lastAuthUserId = newId;
+  if (changedUser) {
+    myProfileNameCache = null;
+    // Tell the person what just happened — previously the only sign of
+    // a successful login was the small level badge appearing. Not on
+    // page load, when a saved session is merely being restored.
+    if (!(info && info.initial)) showInfoToast(user ? "✅ تم تسجيل الدخول" : "تم تسجيل الخروج");
+  }
+
   if (user) {
     guestActions.style.display = "none";
     userActions.style.display = "flex";
@@ -440,7 +600,14 @@ onAuthChange(async (user) => {
 
     if (typeof unsubscribeFromIncomingDuelInvites === "function") unsubscribeFromIncomingDuelInvites();
     hideDuelInviteBanner();
+    hideModal(newPasswordModal);
   }
+
+  // The open tab was rendered for the previous user (or for a guest) —
+  // re-render it. Without this, logging in from the profile/friends/
+  // leaderboard tab left it empty until a page refresh, and logging out
+  // left the previous account's friends list on screen.
+  if (changedUser) refreshCurrentView();
 });
 
 // -------- stats view (sessions) --------
@@ -777,12 +944,13 @@ async function loadFriendsLeaderboard() {
     leaderboardBody.innerHTML = '<div class="status">سجّل الدخول لرؤية تصنيف أصدقائك.</div>';
     return;
   }
-  const [friends, rows] = await Promise.all([fetchMyFriends(), fetchSessionLeaderboard()]);
-  const friendIds = new Set((friends || []).map((f) => f.friend_user_id));
-  friendIds.add(currentUser.id); // your own public session counts in your own friends list too
-  const filtered = (rows || []).filter((r) => friendIds.has(r.user_id));
+  const friends = await fetchMyFriends();
+  const ids = (friends || []).map((f) => f.friend_user_id);
+  ids.push(currentUser.id); // your own public session counts in your own friends list too
+  const rows = await fetchSessionLeaderboard(ids);
+  if (currentLeaderboardTab !== "friends") return; // switched tabs meanwhile
   leaderboardBody.innerHTML = renderLeaderboardHtml(
-    filtered,
+    rows,
     "لا يوجد أصدقاء لديهم جلسات في لوحة الصدارة بعد. أضف أصدقاء من «👥 أصدقائي»."
   );
 }
@@ -793,6 +961,7 @@ async function loadFriendsLeaderboard() {
 // week at all.
 async function loadWeeklyLeaderboard() {
   const rows = await fetchWeeklySessionLeaderboard();
+  if (currentLeaderboardTab !== "weekly") return;
   const active = (rows || []).filter((r) => (r.total_answers || 0) > 0);
   leaderboardBody.innerHTML = renderLeaderboardHtml(
     active,
@@ -802,6 +971,7 @@ async function loadWeeklyLeaderboard() {
 
 async function loadAllTimeLeaderboard() {
   const rows = await fetchSessionLeaderboard();
+  if (currentLeaderboardTab !== "alltime") return;
   leaderboardBody.innerHTML = renderLeaderboardHtml(rows);
 }
 
@@ -901,18 +1071,57 @@ const profileStreakNumbers = document.getElementById("profileStreakNumbers");
 const profileAchievementsBody = document.getElementById("profileAchievementsBody");
 const profileRankLadder = document.getElementById("profileRankLadder");
 
+// -------- profile: editable display name --------
+const profileNameForm = document.getElementById("profileNameForm");
+const profileNameInput = document.getElementById("profileNameInput");
+const profileNameSaveBtn = document.getElementById("profileNameSaveBtn");
+profileNameInput.addEventListener("input", () => {
+  const v = profileNameInput.value.replace(/\s+/g, " ").trim();
+  profileNameSaveBtn.disabled = !v || v === myProfileNameCache;
+});
+
+profileNameForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const v = profileNameInput.value.replace(/\s+/g, " ").trim();
+  if (!v || v.length > AUTH_MAX_NAME || v === myProfileNameCache) return;
+  profileNameSaveBtn.disabled = true;
+  try {
+    const saved = await updateDisplayName(v);
+    myProfileNameCache = saved;
+    profileNameInput.value = saved;
+    if (typeof onMyDisplayNameChanged === "function") onMyDisplayNameChanged(saved);
+    showInfoToast("✅ تم حفظ الاسم");
+  } catch (err) {
+    console.error("updateDisplayName error", err);
+    alert("تعذّر حفظ الاسم. حاول مرة أخرى.");
+    profileNameSaveBtn.disabled = false;
+  }
+});
+
+let profileLoadToken = 0;
+
 async function loadProfileView() {
   if (!currentUser) return; // profileGuestNotice is shown instead — see onAuthChange above
+  const myToken = ++profileLoadToken;
 
   profileAchievementsBody.innerHTML = '<div class="status">جاري التحميل...</div>';
 
-  const [stats, catalog, earned, pageStats, dailyActivity] = await Promise.all([
+  const [stats, catalog, earned, pageStats, dailyActivity, profile] = await Promise.all([
     fetchUserStats(),
     fetchAchievementsCatalog(),
     fetchMyAchievements(),
     fetchMyPageStats(),
     fetchMyDailyActivity(),
+    fetchProfile(),
   ]);
+  // a newer load (or a sign-out) started while this one was in flight
+  if (myToken !== profileLoadToken || !currentUser) return;
+
+  myProfileNameCache = profile?.display_name || "";
+  if (document.activeElement !== profileNameInput) {
+    profileNameInput.value = myProfileNameCache;
+    profileNameSaveBtn.disabled = true;
+  }
 
   const xp = stats?.xp || 0;
   const level = levelFromXp(xp);

@@ -1,3 +1,53 @@
+# Second audit — 2026-10-16
+
+Tested this time against a **real local Supabase stack** (Supabase Auth/GoTrue + PostgREST + Postgres running your `supabase-schema.sql`, plus your Edge Function), with two real accounts in a browser — login, quizzes, ذاتي sessions and resume, profile, friends, leaderboard, password reset, and duels.
+
+## Your two reports
+- **Login "nothing happens".** Logging in worked (modal closes in ~0.4 s), but if you logged in from the 👤 profile, 👥 friends or 🏆 leaderboard tab, that tab was **not reloaded** — it stayed empty/"سجّل الدخول" until a refresh. Logging out had the reverse bug (your friend code and friends stayed on screen). Now the open tab re-renders on login/logout, a "✅ تم تسجيل الدخول" / "تم تسجيل الخروج" message appears, the button says "جارٍ تسجيل الدخول..." while waiting, and a stalled connection gives up after 20 s with a message instead of hanging forever. Also applied Supabase's recommended fix for a known sign-in stall (auth listeners now run after sign-in completes).
+- **📝 اختبارات scroll.** After answering, the page scrolls so "سؤال جديد" and the ✅/❌ line sit just above the bottom nav (only if they're off-screen).
+
+## Security (database — re-run `supabase-schema.sql`)
+All reproduced through the REST API as a normal signed-in player, then confirmed fixed:
+| Issue | Fix |
+|---|---|
+| A duel player could **rewrite or delete the shared duel questions** (the "public" view was writable — e.g. remove the right answer for the opponent) | All views are read-only for clients |
+| A player could **read every upcoming duel question** at the start | View only returns questions already reached |
+| A losing player could **skip each question instantly** so the opponent never scores (forcing a draw) | Server only advances when a point was won, both answered, or time ran out |
+| Answers accepted **before the question was shown or after time ran out** | Server enforces the question window |
+| **Invite spam** — 5 taps = 5 banners for the other person | A new invite replaces the previous pending one |
+| Old invites / abandoned duels resurfaced days later | Invites expire after 10 min; unstarted duels stop being resumed |
+| Quick match could pair you with someone who'd closed the tab | Queue entries older than 2 min are ignored; the app stops waiting at 2 min |
+| Attempts could be added to **finished** sessions or pages outside the session's range | Rejected (attempt still counts for XP, just not for that session) |
+
+## Security (website)
+- **Script injection in the "online now" duel list:** presence data comes from other people's browsers and a crafted user id was inserted into the page unescaped. Now validated + escaped, and names are looked up from the database instead of trusted.
+- **Content-Security-Policy** added: only the site's own script files can run, so an HTML-injection bug can't execute code. The inline startup script moved to `boot.js` for this.
+
+## Bugs
+- **Quran reader hidden under the bottom nav:** the reader had a hard 750px minimum height, taller than most phone screens — the ▶ السابقة / التالية ◀ buttons and page number were under the bottom nav, and the reader scrolled. It's now exactly one screen tall on every size; the font also shrinks (to a readable minimum) so all 15 lines fit. On short phones this also fixed lines being cut off.
+- **Back button left the site.** Each tab is now its own address (`#home`, `#profile` …): back/forward move between tabs and refreshing keeps you on the same tab. Auth links (password reset / email confirmation) are left untouched.
+- Switching accounts in the same tab kept the previous account's ذاتي quiz, live duel, cached name and friend list.
+- If preparing duel questions failed, the opponent was stuck on "بانتظار المضيف" (with only a surrender button that counts as a loss) — the duel is now cancelled.
+- Duel "first/last ayah" questions had random-ayah wrong answers (guessable by shape) — now uses other pages' first/last ayahs like the solo quiz.
+- Leaderboard: the database sent an arbitrary 200 public sessions before ranking, so real top players could be missing; friends tab could miss friends. Now ordered/filtered on the server.
+- Signing up with an already-registered email (when email confirmation is on) said "check your email" — now says the email is taken.
+- New tabs opened scrolled halfway down (kept the previous tab's position).
+- Duel invite banner showed ⚔️ twice; achievement toasts appeared behind the bottom nav.
+
+## New
+- **"نسيت كلمة المرور؟"** in the login dialog → reset email → "🔑 كلمة مرور جديدة" dialog on return (tested end-to-end).
+- **Edit your display name** in 👤 ملفي الشخصي.
+- **`npm run bump`** sets the cache-busting version everywhere in `index.html` before a deploy.
+- Escape closes dialogs; bottom nav announces the current tab to screen readers; phone address-bar colour follows the dark/light toggle.
+
+## Deploy steps
+1. Re-run `supabase-schema.sql` in the SQL Editor.
+2. `supabase functions deploy generate-duel-questions`
+3. In Supabase → Authentication → URL Configuration, make sure your site is in **Redirect URLs** (see SETUP.md §4) — needed for the new password reset.
+4. `npm run bump`, commit, push.
+
+---
+
 # Website audit & cleanup — 2026-10-15
 
 ## 1. Mobile/Capacitor scaffolding removed

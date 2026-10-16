@@ -5,6 +5,7 @@
   "description": "بطاقات مراجعة القرآن — static web app (no build step). npm is only used to vendor third-party assets.",
   "scripts": {
     "vendor": "node scripts/vendor.js",
+    "bump": "node scripts/bump-version.js",
     "serve": "python3 -m http.server 8000"
   },
   "devDependencies": {

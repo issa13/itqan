@@ -19,9 +19,14 @@ const sb = isConfigured
 let currentUser = null;
 const authListeners = [];
 
+// Listeners get (user, { initial }) — initial is true until the session
+// stored from a previous visit has been restored, so a listener can tell
+// "page just loaded" apart from "the person just logged in/out".
+let authInitialized = false;
+
 function onAuthChange(fn) {
   authListeners.push(fn);
-  fn(currentUser); // fire immediately with current state
+  fn(currentUser, { initial: !authInitialized }); // fire immediately with current state
 }
 
 // Listeners only care about WHO is signed in, not about token
@@ -35,9 +40,10 @@ function notifyAuthListeners() {
   const id = currentUser ? currentUser.id : null;
   if (id === lastNotifiedUserId) return;
   lastNotifiedUserId = id;
+  const info = { initial: !authInitialized };
   authListeners.forEach((fn) => {
     try {
-      const result = fn(currentUser);
+      const result = fn(currentUser, info);
       if (result && typeof result.catch === "function") result.catch((e) => console.error("auth listener error", e));
     } catch (e) {
       console.error("auth listener error", e);
@@ -56,29 +62,80 @@ async function initAuth() {
     currentUser = null;
   }
   notifyAuthListeners();
+  authInitialized = true;
 
-  sb.auth.onAuthStateChange((_event, session) => {
-    currentUser = session?.user || null;
-    notifyAuthListeners();
+  sb.auth.onAuthStateChange((event, session) => {
+    // Deferred with setTimeout, as Supabase recommends: supabase-js
+    // awaits this callback while holding its internal auth lock, and our
+    // listeners immediately make more Supabase calls (which need that
+    // same lock). Running them inline can stall sign-in on a slow
+    // connection; deferring lets signIn() finish first.
+    setTimeout(() => {
+      currentUser = session?.user || null;
+      notifyAuthListeners();
+      if (event === "PASSWORD_RECOVERY" && typeof onPasswordRecovery === "function") onPasswordRecovery();
+    }, 0);
   });
+}
+
+// supabase-js has no request timeout, so on a stalled connection a
+// sign-in could otherwise hang forever with no feedback.
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message || "network timeout")), ms); }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 // signUp returns the raw { user, session } so the caller can tell
 // whether email confirmation is required (session will be null).
 async function signUp(email, password, displayName) {
-  const { data, error } = await sb.auth.signUp({
+  const { data, error } = await withTimeout(sb.auth.signUp({
     email,
     password,
-    options: { data: { display_name: (displayName || "مستخدم").slice(0, 30) } },
-  });
+    options: {
+      data: { display_name: (displayName || "مستخدم").slice(0, 30) },
+      // where the confirmation email's link sends people back to
+      emailRedirectTo: window.location.origin + window.location.pathname,
+    },
+  }), 20000, "network timeout");
   if (error) throw error;
   return data;
 }
 
 async function signIn(email, password) {
-  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  const { data, error } = await withTimeout(sb.auth.signInWithPassword({ email, password }), 20000, "network timeout");
   if (error) throw error;
   return data;
+}
+
+// Sends a "reset your password" email. The link brings the person back
+// to this page, where Supabase fires PASSWORD_RECOVERY (see initAuth)
+// and auth-ui.js asks for the new password.
+async function requestPasswordReset(email) {
+  const { error } = await withTimeout(sb.auth.resetPasswordForEmail(email, {
+    redirectTo: window.location.origin + window.location.pathname,
+  }), 20000, "network timeout");
+  if (error) throw error;
+}
+
+async function updatePassword(newPassword) {
+  const { error } = await withTimeout(sb.auth.updateUser({ password: newPassword }), 20000, "network timeout");
+  if (error) throw error;
+}
+
+// Returns the saved (server-normalised) name, or throws.
+async function updateDisplayName(name) {
+  if (!sb || !currentUser) throw new Error("not signed in");
+  const { data, error } = await sb
+    .from("profiles")
+    .update({ display_name: name })
+    .eq("id", currentUser.id)
+    .select("display_name")
+    .single();
+  if (error) throw error;
+  return data.display_name;
 }
 
 async function signOut() {
@@ -354,6 +411,18 @@ async function fetchDisplayName(userId) {
   return data?.display_name || null;
 }
 
+// Display names for several user ids in one request, as a Map(id -> name).
+async function fetchDisplayNames(userIds) {
+  const ids = (userIds || []).filter((id) => /^[0-9a-f-]{36}$/i.test(id));
+  if (!sb || !ids.length) return new Map();
+  const { data, error } = await sb.from("profiles").select("id, display_name").in("id", ids);
+  if (error) {
+    console.error("fetchDisplayNames error", error);
+    return new Map();
+  }
+  return new Map((data || []).map((r) => [r.id, r.display_name]));
+}
+
 // -------- lifetime stats & achievements (levels) --------
 async function fetchUserStats() {
   if (!sb || !currentUser) return null;
@@ -513,12 +582,20 @@ async function fetchFriendProfile(friendUserId) {
 }
 
 // -------- leaderboard (raw rows; caller ranks with Wilson score) --------
-async function fetchSessionLeaderboard() {
+// Ranking (Wilson score) happens client-side, but the database still has
+// to pick WHICH rows to send. Ordering by correct answers first means the
+// strongest sessions are always included; previously an unordered
+// limit(200) could leave real top players out once there were more than
+// 200 public sessions. userIds narrows it to specific people (friends tab).
+async function fetchSessionLeaderboard(userIds) {
   if (!sb) return [];
-  const { data, error } = await sb
+  let q = sb
     .from("session_leaderboard")
     .select("*")
+    .order("total_correct", { ascending: false })
     .limit(200);
+  if (Array.isArray(userIds)) q = q.in("user_id", userIds);
+  const { data, error } = await q;
   if (error) {
     console.error("fetchSessionLeaderboard error", error);
     return [];
@@ -534,6 +611,8 @@ async function fetchWeeklySessionLeaderboard() {
   const { data, error } = await sb
     .from("session_leaderboard_weekly")
     .select("*")
+    .gt("total_answers", 0)
+    .order("total_correct", { ascending: false })
     .limit(200);
   if (error) {
     console.error("fetchWeeklySessionLeaderboard error", error);

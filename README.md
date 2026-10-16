@@ -21,6 +21,7 @@ Everything else — the Quran text itself, page layout, search, question generat
 |---|---|
 | `index.html` | The whole app's structure — every screen/tab/modal lives in this one file, shown/hidden with CSS. |
 | `styles.css` | All visual styling. |
+| `boot.js` | Tiny startup script (theme before first paint, data version). |
 | `config.js` | Your Supabase project URL + public key. If left as placeholders, the app runs in **guest mode** (see §5). |
 | `supabase-client.js` | Thin wrapper around the Supabase SDK — login, signup, and every database call. |
 | `auth-ui.js` | Wires up login/signup UI, profile, friends, leaderboard, and switching between tabs. |
@@ -154,7 +155,7 @@ npm run vendor       # regenerates vendor/ and fonts/ — COMMIT them (GitHub Pa
 ```
 
 ### Deploying
-Commit and push — GitHub Pages serves the repo root as-is. Before each deploy, bump the version string in `index.html` (`QF_ASSET_VERSION` **and** every `?v=` on the `<link>`/`<script>` tags) so browsers drop their cached copies.
+Before each deploy run `npm run bump` — it sets the cache-busting version in `index.html` (`data-asset-version` and every `?v=`) to today's date, so browsers drop their cached copies. Then commit and push; GitHub Pages serves the repo root as-is.
 
 ### Question de-duplication (how repeats are prevented)
 A question is identified by **(type, question ayah)**.
@@ -173,6 +174,8 @@ The anon key in `config.js` is public by design — **row-level security and the
 - **New functions are callable by everyone by default.** Postgres/Supabase grant `EXECUTE` to `anon` and `authenticated` automatically, so section 30 of the schema revokes it from every `security definer` function and re-grants only the ones the app calls. When you add a new RPC, add a matching `grant execute ... to authenticated` there (and nothing for internal helpers).
 - **Solo-quiz scoring is client-reported.** Questions for 📝 اختبارات / ذاتي are generated in the browser, so a determined user could report answers as correct. The server limits the damage (input validation, one attempt per 350 ms), but fully cheat-proof scoring would need server-side question generation like duels use.
 - **Online duels are server-authoritative.** Correct answers live only in `duel_questions` (never readable by clients) and are checked inside `submit_duel_answer()`.
+- **Content-Security-Policy** (the `<meta http-equiv>` in `index.html`) only lets this site's own script files run — no inline scripts, nothing from other domains. That's why the startup code lives in `boot.js`. If you ever move Supabase to a custom domain, or add an audio host / analytics script, add that domain to the policy or the browser will block it.
+- **Views are read-only, duels are time-checked on the server.** Section 30 revokes write access on every view; `submit_duel_answer()` / `advance_duel_question()` enforce the question window and only move on once a round is really over.
 - **Anything user-typed is escaped before it's rendered** (`escapeHtml` and friends in the JS). Keep using `textContent` or those helpers for display names, bookmark names, etc.
 
 After changing `supabase-schema.sql`, re-run the whole file in the Supabase SQL editor — it's written to be safely re-runnable.

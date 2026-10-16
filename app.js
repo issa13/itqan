@@ -1423,6 +1423,19 @@ function finishQuestion(isCorrect) {
 
   setStatus(isCorrect ? "✅ إجابة صحيحة!" : "❌ إجابة خاطئة.");
 
+  // Bring "سؤال جديد" (and the ✅/❌ line under it) up to just above the
+  // bottom nav, so the next question is one tap away without scrolling.
+  // Only scrolls if they're actually off-screen; scroll-margin-bottom in
+  // styles.css keeps them clear of the fixed nav.
+  requestAnimationFrame(() => {
+    const r = statusEl.getBoundingClientRect();
+    const nav = document.getElementById("bottomNav");
+    const visibleBottom = window.innerHeight - (nav ? nav.offsetHeight : 0);
+    if (r.bottom > visibleBottom || r.top < 0) {
+      statusEl.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  });
+
   const flashClass = isCorrect ? "flash-correct" : "flash-wrong";
   flashcard.classList.add(flashClass);
   setTimeout(() => flashcard.classList.remove(flashClass), 700);
@@ -2378,7 +2391,7 @@ async function loadDuelFriendsList() {
   }
   duelFriendsList.innerHTML = friends
     .map((f) => `
-      <div class="duel-person-row" data-user-id="${f.friend_user_id}" data-name="${escapeDuelHtml(f.friend_display_name)}">
+      <div class="duel-person-row" data-user-id="${escapeDuelHtml(f.friend_user_id)}" data-name="${escapeDuelHtml(f.friend_display_name)}">
         <span class="duel-person-name">${escapeDuelHtml(f.friend_display_name)}</span>
         <button type="button" class="btn small challenge-duel-friend-btn">⚔️ تحدَّ</button>
       </div>`)
@@ -2414,16 +2427,40 @@ async function addFriendFromDuel(userId, btnEl) {
   }
 }
 
-function renderDuelOnlineList(people) {
-  if (!people || !people.length) {
+// Presence data comes straight from other people's browsers, so none
+// of it is trusted: the user id must look like a real UUID (it ends up in
+// an HTML attribute — unescaped, a crafted "id" was a script-injection
+// hole for everyone viewing the lobby), and the name shown is looked up
+// from profiles rather than taken from whatever the other client sent.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const lobbyNameCache = new Map();
+let lobbyRenderToken = 0;
+
+async function renderDuelOnlineList(rawPeople) {
+  const myToken = ++lobbyRenderToken;
+  const seen = new Set();
+  const people = (rawPeople || []).filter((p) => {
+    if (!p || !UUID_RE.test(p.userId || "") || seen.has(p.userId)) return false;
+    seen.add(p.userId);
+    return true;
+  });
+  if (!people.length) {
     duelOnlineList.innerHTML = '<div class="status">لا أحد متصل الآن.</div>';
     return;
   }
+  const missing = people.map((p) => p.userId).filter((id) => !lobbyNameCache.has(id));
+  if (missing.length && typeof fetchDisplayNames === "function") {
+    const names = await fetchDisplayNames(missing);
+    names.forEach((name, id) => lobbyNameCache.set(id, name));
+    if (myToken !== lobbyRenderToken) return; // a newer presence update already rendered
+  }
+  people.forEach((p) => { p.display_name = lobbyNameCache.get(p.userId) || "لاعب"; });
+
   duelOnlineList.innerHTML = people
     .map((p) => {
       const alreadyFriend = myFriendIdsCache.has(p.userId);
       return `
-      <div class="duel-person-row" data-user-id="${p.userId}" data-name="${escapeDuelHtml(p.display_name)}">
+      <div class="duel-person-row" data-user-id="${escapeDuelHtml(p.userId)}" data-name="${escapeDuelHtml(p.display_name)}">
         <span class="duel-person-name"><span class="duel-online-dot"></span>${escapeDuelHtml(p.display_name)}</span>
         <span class="duel-person-actions">
           ${alreadyFriend ? "" : '<button type="button" class="btn small ghost duel-add-friend-btn">+ صديق</button>'}
@@ -2637,6 +2674,9 @@ async function hostGenerateQuestionsAndWatch(id) {
   teardownDuelStateWatch();
   const result = await generateDuelQuestions(id);
   if (!result || !result.ok) {
+    // Cancel it, otherwise the opponent sits on "waiting for host"
+    // forever with only a surrender button (which would count as a loss).
+    if (typeof cancelDuel === "function") await cancelDuel(id);
     alert("تعذّر تحضير أسئلة التحدي. حاول مرة أخرى لاحقًا.");
     duelId = null;
     switchDuelScreen("hub");
@@ -2653,13 +2693,27 @@ async function hostGenerateQuestionsAndWatch(id) {
 // Defensive fallback for the side still waiting in the quick-match
 // queue, in case the realtime "you've been matched" notification
 // (which arrives via the same channel as friend invites) doesn't land.
+// Matches only pair with people who joined within the last 2 minutes
+// (see join_quick_match_queue()), so stop waiting at that point too —
+// past it, nobody new can be matched with this queue entry anyway.
+const QUICK_MATCH_MAX_WAIT_MS = 2 * 60 * 1000;
+
 function startQuickMatchWaitPoll() {
   stopQuickMatchWaitPoll();
+  const startedAt = Date.now();
   duelWaitingPollInterval = setInterval(async () => {
     const active = await fetchMyActiveDuels();
-    if (!active || !active.length) return;
-    stopQuickMatchWaitPoll();
-    await resumeDuel(active[0]);
+    if (active && active.length) {
+      stopQuickMatchWaitPoll();
+      await resumeDuel(active[0]);
+      return;
+    }
+    if (Date.now() - startedAt > QUICK_MATCH_MAX_WAIT_MS) {
+      stopQuickMatchWaitPoll();
+      await leaveQuickMatchQueue();
+      alert("لم يتم العثور على خصم بنفس الإعدادات. جرّب مرة أخرى أو غيّر الإعدادات.");
+      switchDuelScreen("hub");
+    }
   }, 4000);
 }
 function stopQuickMatchWaitPoll() {
@@ -2866,6 +2920,13 @@ async function submitMyDuelAnswer(choiceIndex) {
     return;
   }
 
+  if (result.timeUp) {
+    // reached the server after the question's time ran out
+    showDuelRoundStatus({ timeout: true });
+    tryAdvanceDuelQuestion(questionIndex);
+    return;
+  }
+
   highlightDuelChoice(choiceIndex, result.isCorrect);
   showDuelRoundStatus(result);
 
@@ -2936,11 +2997,23 @@ function stopDuelTimer() {
   duelProgressBar.style.width = "0%";
 }
 
-async function tryAdvanceDuelQuestion(questionIndex) {
+async function tryAdvanceDuelQuestion(questionIndex, attempt = 0) {
   if (duelAdvancePending) return;
   duelAdvancePending = true;
+  const id = duelId;
   try {
-    await advanceDuelQuestion(duelId, questionIndex);
+    const result = await advanceDuelQuestion(id, questionIndex);
+    // advance_duel_question() only moves on once the round is really
+    // over (point won, both answered, or time up by the SERVER's clock).
+    // If this device's clock runs a little fast, its timer ends early —
+    // retry for a few seconds rather than getting stuck.
+    if (result && result.reason === "too_early" && attempt < 8) {
+      setTimeout(() => {
+        if (duelId === id && duelCurrentQuestion && duelCurrentQuestion.question_index === questionIndex) {
+          tryAdvanceDuelQuestion(questionIndex, attempt + 1);
+        }
+      }, 1000);
+    }
     // No need to act on the result — the realtime subscription
     // (onDuelStateChangedDuringPlay) delivers the new question index
     // (or 'finished' status) to both players uniformly.
@@ -3585,6 +3658,9 @@ selfPlayAudioBtn.addEventListener("click", async () => {
 // continuing). Called both to kick off the very first question and
 // after every answer.
 async function nextSelfQuestion() {
+  // A delayed call can land after the quiz was reset (e.g. sign-out
+  // mid-question) — don't revive a quiz that's no longer on screen.
+  if (selfPlaySection.style.display === "none") return;
   selfAnswered = false;
   stopSelfTimer();
   selfAudioStop();
@@ -3929,8 +4005,50 @@ function applyRemoteSettings(settings) {
   });
 });
 
+// Called whenever the signed-in account changes (login, logout, switch).
+// ذاتي and مباشر hold per-account state — an active session id, a live
+// duel, cached names/friends — that must not carry over to the next
+// person (or to a guest) using the same tab.
+function resetChallengesForAuthChange() {
+  myDisplayNameCache = null;
+  myFriendIdsCache = new Set();
+  lobbyNameCache.clear();
+
+  // ذاتي: drop whatever was on screen; re-entered below for the new user.
+  stopSelfTimer();
+  selfAudioStop();
+  selfHasActiveCard = false;
+  resetSelfToSetup();
+
+  // مباشر: stop everything tied to the previous account's duel.
+  stopQuickMatchWaitPoll();
+  teardownDuelStateWatch();
+  stopDuelTimer();
+  stopDuelTypeIntroCountdown();
+  duelAudioStop();
+  if (typeof leaveOnlineLobby === "function") leaveOnlineLobby();
+  duelId = null;
+  duelCurrentQuestion = null;
+  duelOpponentId = null;
+  duelOpponentName = "الخصم";
+  duelLastConfig = null;
+  if (challengeOnlineWrap.style.display !== "none") enterOnlineDuelMode();
+  else switchDuelScreen(null);
+}
+
+function onMyDisplayNameChanged(name) {
+  myDisplayNameCache = name;
+}
+
+let appLastAuthUserId; // undefined until the first auth callback
+
 if (typeof onAuthChange === "function") {
   onAuthChange(async (user) => {
+    const newId = user ? user.id : null;
+    const accountChanged = appLastAuthUserId !== undefined && newId !== appLastAuthUserId;
+    appLastAuthUserId = newId;
+    if (accountChanged) resetChallengesForAuthChange();
+
     if (user && typeof loadRemoteSettings === "function") {
       const remote = await loadRemoteSettings();
       if (remote) {

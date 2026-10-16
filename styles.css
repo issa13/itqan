@@ -1913,7 +1913,8 @@ select:focus, input:focus {
 .achievement-toast {
   position: fixed;
   left: 50%;
-  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  /* sits above the fixed bottom nav (~64px tall) */
+  bottom: calc(84px + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%) translateY(20px);
   display: flex;
   align-items: center;
@@ -1940,7 +1941,11 @@ select:focus, input:focus {
   flex-direction: column;
   gap: 10px;
   margin-bottom: 12px;
-  min-height: 750px;
+  /* Height is set by resizeQuranShell() to exactly the space between the
+     top bar and the bottom nav. It used to have min-height: 750px, which
+     is taller than most phone screens — the page buttons ended up hidden
+     under the bottom nav and the "fixed" reader scrolled. */
+  min-height: 0;
   max-height: 900px;
 }
 
@@ -1995,7 +2000,7 @@ select:focus, input:focus {
 .quran-page-viewport {
   position: relative;
   flex: 1;
-  min-height: 750px;
+  min-height: 0; /* was 750px — see .quran-shell */
   background: var(--card);
   border-radius: var(--radius-lg);
   border: 1px solid rgba(var(--gold-rgb), 0.22);
@@ -2068,7 +2073,11 @@ select:focus, input:focus {
   justify-content: space-between;
 }
 
-.quran-mushaf-line { width: 100%; }
+/* flex-shrink: 0 — when a page can't fit even at the smallest size, the
+   lines must keep their natural height and let the reader scroll
+   (.quran-viewport-scroll). Shrinking them instead clipped the top of
+   every line on short phones. */
+.quran-mushaf-line { width: 100%; flex-shrink: 0; }
 
 /* Each text line is its own nowrap flex row — fitMushafPage() shrinks
    the font until every line's natural width fits here without
@@ -2085,7 +2094,13 @@ select:focus, input:focus {
   flex-wrap: nowrap;
   justify-content: space-around;
   align-items: baseline;
+  /* Clip sideways only: tall diacritics may extend above/below the line
+     box, which lets the line height be tighter than the font's default
+     (~2.5em) so all 15 lines fit on more phones without scrolling. */
   overflow: hidden;
+  overflow-x: clip;
+  overflow-y: visible;
+  line-height: 2.05;
   white-space: nowrap;
   color: var(--ink);
 }
@@ -2345,4 +2360,38 @@ select:focus, input:focus {
   font-family: 'Amiri Quran', 'Tajawal', serif;
   font-weight: 400;
   line-height: 2;
+}
+
+/* -------- Small text button (e.g. "نسيت كلمة المرور؟") -------- */
+.link-btn {
+  display: block;
+  margin: 10px auto 0;
+  background: none;
+  border: none;
+  color: var(--accent-text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+/* -------- Profile: editable display name -------- */
+.profile-name-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.profile-name-controls { display: flex; gap: 8px; align-items: center; }
+.profile-name-controls input { flex: 1; min-width: 0; }
+
+/* -------- Generic info toast (login/logout confirmation etc.) -------- */
+.info-toast { background: var(--card); color: var(--ink); border: 1.5px solid rgba(var(--gold-rgb), 0.45); }
+
+/* Scroll targets land above the fixed bottom nav, not underneath it */
+#status, #generateBtn { scroll-margin-bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }
+
+/* Short screens (most phones in a browser): give the Mushaf page more of
+   the height by tightening the reader's own padding. */
+@media (max-height: 760px) {
+  .quran-page-viewport { padding: 10px 10px 8px; }
+  .quran-page-nav { margin-top: 6px; padding-top: 6px; }
+  .quran-shell { gap: 6px; }
 }

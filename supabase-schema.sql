@@ -484,9 +484,15 @@ begin
   -- it — which would pollute that session's total_answers/accuracy in
   -- session_summary/session_leaderboard. A non-owned id is treated as
   -- "no session" rather than trusted.
+  -- Also only while the session is still in progress and for a page
+  -- inside its fixed range — otherwise answers could be added to a
+  -- finished (e.g. leaderboard) session afterwards, or from easy pages
+  -- outside the range it claims to cover.
   if p_session_id is not null then
     select exists(
-      select 1 from public.sessions where id = p_session_id and user_id = v_uid
+      select 1 from public.sessions
+      where id = p_session_id and user_id = v_uid and finished_at is null
+        and (p_page is null or range_min is null or p_page between range_min and coalesce(range_max, 604))
     ) into v_owns_session;
     if not v_owns_session then
       p_session_id := null;
@@ -1376,7 +1382,11 @@ select dq.id, dq.duel_id, dq.question_index, dq.question_type, dq.page,
 from public.duel_questions dq
 where exists (
   select 1 from public.duels d
-  where d.id = dq.duel_id and (d.created_by = auth.uid() or d.opponent_id = auth.uid())
+  where d.id = dq.duel_id
+    and (d.created_by = auth.uid() or d.opponent_id = auth.uid())
+    -- only questions already reached: otherwise a player could read every
+    -- upcoming question (and its choices) at the start and prepare answers
+    and (d.status = 'finished' or dq.question_index <= d.current_question_index)
 );
 -- correct_index and winner_user_id are deliberately excluded above —
 -- a view only ever returns the columns in its own SELECT list, so
@@ -1516,6 +1526,11 @@ begin
     raise exception 'invalid_timer';
   end if;
 
+  -- A new invite replaces any still-pending one to the same person, so
+  -- repeated taps (or a script) can't stack up invites on their screen.
+  update public.duels set status = 'cancelled'
+  where created_by = v_uid and opponent_id = p_opponent_id and status = 'pending';
+
   insert into public.duels (
     created_by, opponent_id, status, is_quick_match,
     range_min, range_max, timer_seconds, question_types, count_per_type
@@ -1574,6 +1589,11 @@ begin
     raise exception 'invalid_timer';
   end if;
 
+  -- A new invite replaces any still-pending one to the same person, so
+  -- repeated taps (or a script) can't stack up invites on their screen.
+  update public.duels set status = 'cancelled'
+  where created_by = v_uid and opponent_id = p_opponent_id and status = 'pending';
+
   insert into public.duels (
     created_by, opponent_id, status, is_quick_match,
     range_min, range_max, timer_seconds, question_types, count_per_type
@@ -1603,9 +1623,12 @@ declare
   v_uid uuid := auth.uid();
   v_updated int;
 begin
+  -- Invites expire after 10 minutes: accepting one from hours ago would
+  -- start a duel whose host has long since left.
   update public.duels
   set status = case when p_accept then 'accepted' else 'declined' end
-  where id = p_duel_id and opponent_id = v_uid and status = 'pending';
+  where id = p_duel_id and opponent_id = v_uid and status = 'pending'
+    and created_at > now() - interval '10 minutes';
 
   get diagnostics v_updated = row_count;
   if v_updated = 0 then
@@ -1678,6 +1701,9 @@ begin
   select array(select unnest(p_question_types) order by 1) into v_types;
 
   delete from public.duel_queue where user_id = v_uid;
+  -- The app stops waiting after 2 minutes; anything older is someone who
+  -- closed the tab without leaving the queue — never match with them.
+  delete from public.duel_queue where joined_at < now() - interval '2 minutes';
 
   select * into v_match
   from public.duel_queue
@@ -1766,6 +1792,18 @@ begin
   end if;
   if v_duel.current_question_index <> p_question_index then
     raise exception 'stale_question';
+  end if;
+  -- Enforce the question window server-side (the client timer is only a
+  -- display): not during the "get ready" pre-roll, and not after time is
+  -- up (+2s grace for network delay).
+  if v_duel.current_question_revealed_at is not null then
+    if clock_timestamp() < v_duel.current_question_revealed_at then
+      raise exception 'not_revealed_yet';
+    end if;
+    if clock_timestamp() > v_duel.current_question_revealed_at
+         + make_interval(secs => v_duel.timer_seconds + 2) then
+      return jsonb_build_object('ok', true, 'timeUp', true, 'isCorrect', false, 'wonPoint', false, 'bothAnswered', false);
+    end if;
   end if;
 
   select id, is_correct into v_already
@@ -1910,6 +1948,22 @@ begin
 
   if v_duel.current_question_index <> p_question_index then
     return jsonb_build_object('ok', true, 'alreadyAdvanced', true, 'finished', v_duel.status = 'finished');
+  end if;
+
+  -- The round must really be over: someone won the point, both players
+  -- answered, or the timer ran out (by the server's clock, 1s tolerance
+  -- for client clock drift). Before this check either player could skip
+  -- a question the moment it appeared — a losing player could deny the
+  -- opponent every remaining point and force a draw.
+  if not (
+    exists (select 1 from public.duel_questions
+            where duel_id = p_duel_id and question_index = p_question_index and winner_user_id is not null)
+    or (select count(*) from public.duel_answers
+        where duel_id = p_duel_id and question_index = p_question_index) >= 2
+    or v_duel.current_question_revealed_at is null
+    or clock_timestamp() >= v_duel.current_question_revealed_at + make_interval(secs => greatest(v_duel.timer_seconds - 1, 0))
+  ) then
+    return jsonb_build_object('ok', false, 'reason', 'too_early');
   end if;
 
   v_is_last := (p_question_index + 1 >= v_duel.total_questions);
@@ -2095,7 +2149,9 @@ select d.id, d.created_by, p.display_name as from_display_name, d.status, d.is_q
        d.range_min, d.range_max, d.timer_seconds, d.question_types, d.count_per_type, d.created_at
 from public.duels d
 join public.profiles p on p.id = d.created_by
-where d.opponent_id = auth.uid() and d.status in ('pending', 'accepted');
+where d.opponent_id = auth.uid()
+  and d.status in ('pending', 'accepted')
+  and d.created_at > now() - interval '10 minutes'; -- older invites have expired (see respond_duel_invite)
 
 create or replace view public.my_active_duels as
 select d.*,
@@ -2104,7 +2160,9 @@ from public.duels d
 left join public.profiles cr on cr.id = d.created_by
 left join public.profiles op on op.id = d.opponent_id
 where (d.created_by = auth.uid() or d.opponent_id = auth.uid())
-  and d.status in ('accepted', 'active');
+  -- an 'accepted' duel that never started within 10 minutes was abandoned
+  -- before its questions were generated — don't keep resuming it
+  and (d.status = 'active' or (d.status = 'accepted' and d.created_at > now() - interval '10 minutes'));
 
 -- 30) Function privileges. Postgres grants EXECUTE on every new
 --     function to PUBLIC, and Supabase additionally grants it to the
@@ -2127,6 +2185,20 @@ begin
       and p.prorettype <> 'trigger'::regtype
   loop
     execute format('revoke execute on function %s from public, anon, authenticated', f.sig);
+  end loop;
+end $$;
+
+-- Views are read-only for clients. Supabase grants INSERT/UPDATE/DELETE
+-- on everything in `public` by default, and simple views are
+-- auto-updatable in Postgres, running as their owner (bypassing RLS):
+-- through duel_questions_public a player could rewrite or delete the
+-- shared duel questions (e.g. remove the right answer for the opponent).
+do $$
+declare
+  v record;
+begin
+  for v in select viewname from pg_views where schemaname = 'public' loop
+    execute format('revoke insert, update, delete, truncate on public.%I from anon, authenticated', v.viewname);
   end loop;
 end $$;
 

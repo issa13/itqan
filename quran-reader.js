@@ -249,10 +249,20 @@ function resizeQuranShell() {
   const wrapEl = document.querySelector(".wrap");
   if (!wrapEl) return;
 
-  const top = quranShellEl.getBoundingClientRect().top;
+  // Measured against the page (not the current scroll position) and the
+  // real height of the fixed bottom nav, so the page buttons always end
+  // just above it.
+  const top = quranShellEl.getBoundingClientRect().top + window.scrollY;
+  const nav = document.getElementById("bottomNav");
+  const navHeight = nav ? nav.offsetHeight : 0;
+  // .wrap's bottom padding is what keeps content clear of the fixed nav;
+  // using it (plus the shell's own margin) makes the page exactly one
+  // screen tall, so the reader never scrolls.
   const wrapPaddingBottom = parseFloat(getComputedStyle(wrapEl).paddingBottom) || 0;
-  const available = window.innerHeight - top - wrapPaddingBottom - 8; // small safety margin
-  quranShellEl.style.height = Math.max(280, available) + "px";
+  const shellMarginBottom = parseFloat(getComputedStyle(quranShellEl).marginBottom) || 0;
+  const reserved = Math.max(navHeight + 12, wrapPaddingBottom + shellMarginBottom);
+  const available = window.innerHeight - top - reserved;
+  quranShellEl.style.height = Math.max(360, available) + "px";
   fitMushafPage();
 }
 
@@ -261,7 +271,8 @@ function resizeQuranShell() {
 // as well, which disabled shrinking entirely — dense pages then had
 // their line ends clipped off-screen on small phones.
 const QURAN_MAX_FONT_PX = 16;
-const QURAN_MIN_FONT_PX = 11;
+const QURAN_MIN_FONT_PX = 11;        // floor when a line is too WIDE (it must stay one line)
+const QURAN_MIN_FONT_FOR_HEIGHT = 13; // floor when the page is too TALL — below this, scroll instead
 
 function fitMushafPage() {
   if (!quranPageContent) return;
@@ -284,11 +295,25 @@ function fitMushafPage() {
   const anyLineOverflowsWidth = () =>
     Array.from(quranPageContent.querySelectorAll(".quran-mushaf-line"))
       .some((el) => el.scrollWidth > el.clientWidth + 1);
+  // the lines' natural total height (space-between spreads them out, so
+  // measure the children rather than the stretched container)
+  const linesOverflowHeight = () => {
+    const lines = Array.from(quranPageContent.querySelectorAll(".quran-mushaf-line"));
+    const total = lines.reduce((sum, el) => sum + el.offsetHeight, 0);
+    return total > quranPageContent.clientHeight;
+  };
 
   // Shrink until every individual line fits its available width
   // without wrapping — a dataset "line" that wrapped into two visual
-  // rows would break the real 15-line-per-page layout entirely.
-  while (anyLineOverflowsWidth() && fontSize > minFont) {
+  // rows would break the real 15-line-per-page layout entirely — and
+  // until all 15 lines fit the height on short screens.
+  // Height gets a higher floor than width: on a short screen, a page that
+  // still doesn't fit at 13px scrolls inside the reader (see below)
+  // rather than shrinking into unreadable text.
+  while (
+    (anyLineOverflowsWidth() && fontSize > minFont) ||
+    (linesOverflowHeight() && fontSize > Math.max(minFont, QURAN_MIN_FONT_FOR_HEIGHT))
+  ) {
     fontSize -= 1;
     quranPageContent.style.fontSize = fontSize + "px";
   }
@@ -305,7 +330,9 @@ function fitMushafPage() {
   // Even at the smallest readable size the whole block might still be
   // taller than the box on an unusually small screen — fall back to
   // an internal scroll rather than clip content.
-  if (quranPageContent.scrollHeight > quranPageContent.clientHeight) {
+  // (a few px of tolerance: diacritics on the last line may poke out of
+  // its line box by a pixel or two, which isn't worth a scrollbar)
+  if (quranPageContent.scrollHeight > quranPageContent.clientHeight + 6) {
     quranPageContent.classList.add("quran-viewport-scroll");
   }
 }
@@ -1274,4 +1301,17 @@ quranMenuDropdown.querySelectorAll(".quran-menu-item[data-quiz-action]").forEach
 // classes) — this actually initializes it the same way clicking the
 // 📖 القرآن tab would, since the HTML's static classes alone don't
 // run enterQuranTab().
-if (typeof switchView === "function") switchView("quran");
+// Opens the tab named in the URL (#profile etc. — see switchView()), so a
+// refresh or a shared link lands on the same tab; Quran otherwise.
+if (typeof switchView === "function") {
+  const initialView = location.hash.slice(1);
+  const known = typeof appViews === "object" && appViews[initialView];
+  switchView(known ? initialView : "quran", { fromHistory: true });
+  // Leave the URL alone when it carries Supabase auth parameters (from a
+  // password-reset or email-confirmation link: #access_token=…&type=…) —
+  // supabase-js reads them and cleans the URL itself; overwriting them
+  // here first would silently break those links.
+  if (!/[=&]/.test(initialView)) {
+    try { history.replaceState({ view: known ? initialView : "quran" }, "", "#" + (known ? initialView : "quran")); } catch (e) { /* ignore */ }
+  }
+}
