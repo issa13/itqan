@@ -1,8 +1,8 @@
 {
-  "name": "quran-flashcards",
+  "name": "itqan",
   "version": "1.1.0",
   "private": true,
-  "description": "بطاقات مراجعة القرآن — static web app (no build step). npm is only used to vendor third-party assets.",
+  "description": "إتقان (Itqan) — Quran memorisation review web app (no build step). npm is only used to vendor third-party assets.",
   "scripts": {
     "vendor": "node scripts/vendor.js",
     "bump": "node scripts/bump-version.js",

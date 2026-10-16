@@ -1,4 +1,4 @@
-# 📖 بطاقات مراجعة القرآن — How This App Works
+# 📖 إتقان (Itqan) — How This App Works
 
 This is a plain-language map of the whole project — what each file does, where the Quran data actually comes from, what needs the internet and what doesn't, and how to run it on your own laptop without confusion.
 

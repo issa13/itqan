@@ -3,7 +3,7 @@
 # into ./mushaf-layout/ in this repo, so the Quran tab depends on files you
 # host yourself instead of a live fetch to a small third-party GitHub repo.
 #
-# Usage: run this once from the root of your quran-flashcards repo, then
+# Usage: run this once from the root of the project repo, then
 # commit the resulting mushaf-layout/ folder.
 #
 #   chmod +x download-mushaf-layout.sh

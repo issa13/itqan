@@ -1,5 +1,5 @@
 -- ============================================================
--- Quran Flashcards — Supabase schema (single source of truth)
+-- إتقان (Itqan) — Supabase schema (single source of truth)
 --
 -- Run this ONCE in your Supabase project's SQL Editor
 -- (Dashboard → SQL Editor → New query → paste this whole file → Run)
