@@ -28,10 +28,10 @@ The app is **your website inside an app shell**. A free tool called **Capacitor*
 |---|---|
 | 📖 Quran, search, bookmarks, quizzes, 📱 محلي challenges | Work **with no internet at all** — even the very first time, because all files are inside the app. |
 | 🎧 Recitation, accounts, 🌐 duels, friends, leaderboard | Need internet, same as the website. |
-| Android **back button** | Closes the ⋮ menu or an open dialog first, then goes to the previous tab, and on the first screen puts the app in the background (a running duel/quiz is still there when you come back). |
-| Status bar (clock, battery) | Its icons switch between dark and light with the app's theme so they're always readable. |
-| Notch / navigation bar | Content never hides behind them. |
-| Icon & splash screen | Green/gold 8-pointed star with an open Mushaf (`mobile/assets/` — replace if you like, see part 6). |
+| Android **back button** | Closes the ⋮ menu or an open dialog first; from any other tab it goes to the 📖 القرآن (Mushaf) tab; on the Mushaf tab it closes the app. |
+| Status bar (clock, battery) & navigation bar | Their background follows the app's light/dark theme and their icons stay readable. |
+| Notch / navigation bar | Content never hides behind them. On Android the page sits between the two bars (no gaps, scrolls to the very end); on iPhone it uses the notch / home-bar sizes. |
+| Icon & splash screen | Green/gold 8-pointed star with an open Mushaf (`mobile/assets/` — replace if you like, see part 6). The website uses the same icon (`icons/`). |
 | Screen rotation | Phones stay upright (the Mushaf page is designed for a tall screen). iPads can rotate. |
 | "Confirm your email" / "reset password" emails | The link opens **your website** in the phone's browser (an email can't open the app directly). After confirming or setting a new password there, go back to the app and log in. |
 
@@ -170,7 +170,7 @@ You'll also need a short **privacy policy page** (what data you store: email, di
 |---|---|
 | Update the app after changing the website | Push to GitHub as usual → a new APK appears in **Actions**. On your computer: `npm run sync` in `mobile/`, then ▶ in Android Studio/Xcode. |
 | Add a **new file** to the website (e.g. `stats.js`) | Also add its name to `WEB_FILES` (or `WEB_FOLDERS`) at the top of `mobile/scripts/copy-web.js`, or it won't be in the app. |
-| Change the icon or splash screen | Replace the PNGs in `mobile/assets/` (same names and sizes: icons 1024×1024, splash 2732×2732), then run `npm run icons` in `mobile/`. |
+| Change the icon or splash screen | Replace the PNGs in `mobile/assets/` (same names and sizes: icons 1024×1024, splash 2732×2732), then run `npm run icons` in `mobile/`. For the website, also replace the files in `icons/` (same names and sizes). |
 | Change the app's name on the home screen | `appName` in `mobile/capacitor.config.json`, plus `app_name` in `mobile/android/app/src/main/res/values/strings.xml` and *Display Name* in Xcode. |
 | Move the website to a new address | Update `QF_AUTH_REDIRECT_URL` at the top of `mobile/native/native-app.js` and add it in Supabase (part 7). |
 | Update Capacitor itself (maybe once a year) | `npm install @capacitor/core@latest @capacitor/cli@latest @capacitor/android@latest @capacitor/ios@latest @capacitor/app@latest @capacitor/splash-screen@latest` in `mobile/`, then `npm run sync`. Check Capacitor's upgrade guide for major versions. |
@@ -209,8 +209,9 @@ So the email links from the app are accepted: Supabase dashboard → **Authentic
 | `package.json` | The commands (`sync`, `android`, `ios`, `icons`) and Capacitor version. |
 | `capacitor.config.json` | App ID, app name, splash-screen and status-bar settings. |
 | `scripts/copy-web.js` | Copies the website into `www/` and adds the two app-only files; also makes the notch/navigation-bar spacing work on older Android phones. |
-| `native/native-app.js` | App-only behaviour: back button, status-bar icons, splash screen, email-link address. |
-| `native/native-app.css` | App-only styling: no page "bounce", no grey flash when tapping buttons. |
+| `native/native-app.js` | App-only behaviour: back button, status/navigation-bar colours, keeping the page between the Android bars, splash screen, email-link address. |
+| `native/native-app.css` | App-only styling: safe-area spacing (0 on Android), no page "bounce" on iPhone, no grey flash when tapping buttons. |
+| `android/app/src/main/java/…/ItqanWindowPlugin.java` | A tiny Android plugin that colours the strips behind the status/navigation bars to match the theme. |
 | `assets/` | Source pictures for the icon and splash screen. |
 | `android/` | The Android Studio project. Signing setup is in `android/app/build.gradle`; `android/keystore.properties.example` shows the file to create for local release builds. |
 | `ios/` | The Xcode project (uses Swift Package Manager — no CocoaPods needed). Background audio is enabled in `ios/App/App/Info.plist`. |

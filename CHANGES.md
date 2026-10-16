@@ -1,3 +1,10 @@
+# 📱 App fixes + website icon — 2026-10-16
+
+- **Android: big gaps above the top bar and under the bottom bar, and the page wouldn't scroll to the end.** The page was being kept clear of the status bar and navigation bar twice — once by Android and once by the page's own "safe area" spacing, which some phones report wrongly. Now the page always sits exactly between the two bars on Android and the extra spacing is 0. A likely cause of the scrolling problem was removed too: an app-only rule that stopped page "bounce" on Android could also block the page from scrolling on some WebView versions. That rule now applies only to iPhone, where it's safe.
+- **Bar colours:** the strips behind the status bar and navigation bar now follow the app's light/dark theme (were grey). Uses a small Android plugin (`ItqanWindowPlugin.java`).
+- **Back button (Android app):** closes an open dialog/menu → otherwise goes to the 📖 القرآن tab → on the Mushaf tab, closes the app. (Previously it walked back through every tab you had visited.)
+- **Website icon:** the app's icon is now the website's icon too — browser tab, bookmarks, and "Add to Home Screen" on phones (`icons/`, `manifest.webmanifest`).
+
 # 🗑 Account deletion — 2026-10-16
 
 Required by Google Play and the App Store for apps with sign-up.

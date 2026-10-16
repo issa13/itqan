@@ -2,11 +2,23 @@
    mobile/scripts/copy-web.js after styles.css). Small touches that make
    the website feel like an installed app. */
 
-/* No "rubber band" bounce of the whole page past its top/bottom edge
-   (individual scrolling areas keep their own behaviour). */
-html.native-app,
-html.native-app body {
-  overscroll-behavior: none;
+/* Android: the page sits BETWEEN the status bar and the navigation bar
+   (native-app.js removes viewport-fit=cover there), so no extra
+   safe-area spacing is needed. copy-web.js turns every
+   env(safe-area-inset-*) in styles.css into
+   var(--itqan-safe-area-inset-*, env(safe-area-inset-*)), so these zeros
+   win on Android while iPhone keeps its real notch / home-bar sizes. */
+html.platform-android {
+  --itqan-safe-area-inset-top: 0px;
+  --itqan-safe-area-inset-right: 0px;
+  --itqan-safe-area-inset-bottom: 0px;
+  --itqan-safe-area-inset-left: 0px;
+}
+
+/* No "rubber band" bounce of the whole page past its top/bottom edge on
+   iPhone (only the page itself — inner scrolling areas are untouched). */
+html.platform-ios {
+  overscroll-behavior-y: none;
 }
 
 /* Tapping a button shouldn't flash a grey box or, on a long press,

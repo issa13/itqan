@@ -13,6 +13,12 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <!-- Strips behind the status / navigation bars: the app's "paper"
+             colour (dark version in values-night). While the app runs,
+             native-app.js recolours them to follow the in-app theme toggle. -->
+        <item name="android:windowBackground">@color/itqan_splash_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
 
 

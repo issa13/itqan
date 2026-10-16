@@ -15,9 +15,10 @@
 //      index.html — back button, status bar colours, splash screen,
 //      and where account emails should send people back to.
 //   2. in styles.css, every env(safe-area-inset-*) becomes
-//      var(--safe-area-inset-*, env(safe-area-inset-*)) — on older
-//      Android phones env() reports 0, so Capacitor provides the real
-//      notch / navigation-bar sizes as CSS variables instead.
+//      var(--itqan-safe-area-inset-*, env(safe-area-inset-*)) — on
+//      Android native-app.css sets those variables to 0 (the page sits
+//      between the system bars there, and some phones report wrong
+//      env() values); iPhone keeps using env().
 //   3. nothing else — if you add a new file to the website, add it to
 //      the list below too.
 
@@ -38,8 +39,9 @@ const WEB_FILES = [
   "auth-ui.js",
   "app.js",
   "quran-reader.js",
+  "manifest.webmanifest",
 ];
-const WEB_FOLDERS = ["vendor", "fonts", "quran-index", "mushaf-layout"];
+const WEB_FOLDERS = ["vendor", "fonts", "icons", "quran-index", "mushaf-layout"];
 const NATIVE_FILES = ["native-app.js", "native-app.css"];
 
 function fail(msg) {
@@ -88,7 +90,7 @@ let css = fs.readFileSync(cssPath, "utf8");
 let swaps = 0;
 css = css.replace(/env\(\s*safe-area-inset-(top|right|bottom|left)\s*(,[^()]*)?\)/g, (m, side) => {
   swaps++;
-  return `var(--safe-area-inset-${side}, ${m})`;
+  return `var(--itqan-safe-area-inset-${side}, ${m})`;
 });
 fs.writeFileSync(cssPath, css, "utf8");
 

@@ -20,7 +20,8 @@
     },
     "SystemBars": {
       "insetsHandling": "css",
-      "style": "DEFAULT"
+      "style": "DEFAULT",
+      "initialViewportFitValueHint": "contain"
     }
   }
 }

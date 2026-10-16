@@ -37,6 +37,7 @@ Everything else — the Quran text itself, page layout, search, question generat
 | `vendor/`, `fonts/` | **Generated** by `npm run vendor` (§9): the Supabase browser bundle and the three web fonts, self-hosted so nothing is loaded from a CDN. Committed to the repo. |
 | `package.json`, `scripts/vendor.js` | Tooling only (vendoring third-party assets). The app itself has no build step. |
 | `fix-mushaf-surah-headers.js` | One-time repair script for surah-header lines in `mushaf-layout/`. |
+| `icons/`, `manifest.webmanifest` | The app icon for the website (browser tab, "Add to Home Screen" on phones) — the same design as the Android/iPhone app icon. |
 | `mobile/` | The **Android & iPhone app** — the same website packed into a phone app with Capacitor. Everything about it is in **`MOBILE.md`**. |
 | `.github/workflows/android-app.yml` | Builds the Android app automatically on GitHub (Actions tab) on every push to `main`. |
 

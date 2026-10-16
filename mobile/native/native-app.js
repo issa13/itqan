@@ -4,8 +4,10 @@
 //
 // It adds the few things a phone app needs that a website doesn't:
 //   • account emails link back to the public website (see below)
-//   • Android's back button closes dialogs / goes to the previous tab
-//   • status-bar icons stay readable in light and dark theme
+//   • Android's back button: closes a dialog → goes to the 📖 Mushaf
+//     tab → closes the app
+//   • the strips behind the status bar / navigation bar match the theme,
+//     and their icons stay readable in light and dark theme
 //   • the splash screen hides as soon as the page is ready
 //
 // Capacitor gives every installed native plugin to the page as
@@ -39,18 +41,39 @@
   root.classList.add("native-app", "platform-" + platform);
   window.QF_IS_NATIVE_APP = true;
 
+  // ---------------- Android: page stays BETWEEN the system bars ----------------
+  // With viewport-fit=cover, Android draws the page behind the status bar
+  // and navigation bar and relies on CSS safe-area values — which some
+  // phones / WebView versions report wrongly (double gaps at the top and
+  // bottom, page not scrolling to the end). Without it, Capacitor sizes
+  // the page to the space between the bars, and native-app.css sets all
+  // safe-area spacing to 0 on Android. iPhone keeps viewport-fit=cover:
+  // its safe-area values are reliable. Runs while <head> is parsed —
+  // before Capacitor checks the tag.
+  if (platform === "android") {
+    var viewport = document.querySelector('meta[name="viewport"]');
+    if (viewport) {
+      viewport.setAttribute("content", viewport.getAttribute("content").replace(/,?\s*viewport-fit=cover/, ""));
+    }
+  }
+
   function safe(promiseOrValue) {
     // Plugin calls return promises; a failure must never break the app.
     if (promiseOrValue && typeof promiseOrValue.catch === "function") promiseOrValue.catch(function () {});
   }
 
-  // ---------------- status bar / navigation bar icons ----------------
-  // "DARK" style = light icons (for a dark background), "LIGHT" = dark
-  // icons. Follows the app's own theme toggle (data-theme="dark").
+  // ---------------- status bar / navigation bar ----------------
+  // Follows the app's own theme toggle (data-theme="dark"):
+  //  • icon colour — "DARK" style = light icons (for a dark background),
+  //    "LIGHT" = dark icons;
+  //  • Android: the strips behind the bars get the page's --paper colour
+  //    (our own small plugin, android/…/ItqanWindowPlugin.java).
+  var PAPER_LIGHT = "#f4efe1"; // keep in sync with --paper in styles.css
+  var PAPER_DARK = "#14180f";
   function syncSystemBars() {
-    if (!SystemBars) return;
     var dark = root.getAttribute("data-theme") === "dark";
-    safe(SystemBars.setStyle({ style: dark ? "DARK" : "LIGHT" }));
+    if (SystemBars) safe(SystemBars.setStyle({ style: dark ? "DARK" : "LIGHT" }));
+    if (Plugins.ItqanWindow) safe(Plugins.ItqanWindow.setBackgroundColor({ color: dark ? PAPER_DARK : PAPER_LIGHT }));
   }
   syncSystemBars();
   new MutationObserver(syncSystemBars).observe(root, { attributes: true, attributeFilter: ["data-theme"] });
@@ -63,11 +86,9 @@
   else hideSplash();
 
   // ---------------- Android back button ----------------
-  // Order: close the topmost open thing (⋮ menu, then a dialog) → go
-  // back to the previous tab (each tab is its own #address, see
-  // switchView() in auth-ui.js) → on the first screen, send the app to
-  // the background (like every Android app) instead of killing it, so
-  // a running duel / quiz is still there when you come back.
+  // 1. an open ⋮ menu or dialog → close it;
+  // 2. on any other tab → go to the 📖 القرآن (Mushaf) tab;
+  // 3. already on the Mushaf tab → close the app.
   function isShown(el) {
     return !!el && window.getComputedStyle(el).display !== "none";
   }
@@ -89,10 +110,11 @@
   }
 
   if (App && platform === "android") {
-    safe(App.addListener("backButton", function (ev) {
+    safe(App.addListener("backButton", function () {
       if (closeTopmostLayer()) return;
-      if (ev && ev.canGoBack) { window.history.back(); return; }
-      safe(App.minimizeApp());
+      var onMushaf = typeof currentViewName === "undefined" || currentViewName === "quran";
+      if (!onMushaf && typeof switchView === "function") { switchView("quran"); return; }
+      safe(App.exitApp());
     }));
   }
 
