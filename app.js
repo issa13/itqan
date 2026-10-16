@@ -2213,6 +2213,8 @@ const duelQText = document.getElementById("duelQText");
 const duelMcqChoices = document.getElementById("duelMcqChoices");
 const duelPlayAudioBtn = document.getElementById("duelPlayAudioBtn");
 const duelRoundStatus = document.getElementById("duelRoundStatus");
+const duelRoundResult = document.getElementById("duelRoundResult");
+const duelTypeIntroDesc = document.getElementById("duelTypeIntroDesc");
 const duelForfeitBtn = document.getElementById("duelForfeitBtn");
 
 const duelResultsBody = document.getElementById("duelResultsBody");
@@ -2348,6 +2350,7 @@ async function enterOnlineDuelMode() {
 }
 
 async function resumeDuel(duel) {
+  if (typeof markDuelInviteHandled === "function") markDuelInviteHandled(duel.id);
   duelId = duel.id;
   duelIsHost = duel.created_by === currentUser.id;
   duelOpponentId = resolveDuelOpponentId(duel);
@@ -2600,7 +2603,9 @@ duelSubmitBtn.addEventListener("click", async () => {
   duelIsHost = true;
   duelOpponentId = duelConfigContext.friendId;
   duelOpponentName = duelConfigContext.friendName;
-  showDuelWaiting("بانتظار الرد", `بانتظار موافقة ${duelConfigContext.friendName} على التحدي...`, cancelWaitingDuel);
+  showDuelWaiting("بانتظار الرد",
+    `أُرسل التحدي إلى ${duelConfigContext.friendName}. يظهر له إشعار في أي صفحة من التطبيق ما دام التطبيق أو الموقع مفتوحًا لديه، وتبقى الدعوة صالحة ١٠ دقائق.`,
+    cancelWaitingDuel);
   beginDuelStateWatch(newId, onHostWaitingForAcceptance);
 });
 
@@ -2630,20 +2635,62 @@ async function forfeitWhileWaiting() {
   switchDuelScreen("hub");
 }
 
-// -------- realtime state watching while pending/waiting --------
-function beginDuelStateWatch(id, onChange) {
-  teardownDuelStateWatch();
-  duelStateChannel = subscribeToDuelState(id, onChange);
+// -------- watching a duel's state (waiting, then playing) --------
+// Two paths deliver the duels row: the realtime subscription (instant)
+// AND a poll every DUEL_STATE_POLL_MS. Realtime alone used to be the only
+// path — when it didn't deliver (Realtime off for the project, a phone
+// that slept, a flaky network) the challenger waited forever and duels
+// froze. Each distinct state is handed to onChange once, whichever path
+// brings it first; the token drops late answers from a previous watch.
+const DUEL_STATE_POLL_MS = 2500;
+let duelStatePollTimer = null;
+let duelWatchToken = 0;
+let duelLastStateSig = null;
+
+function duelStateSignature(d) {
+  return [d.id, d.status, d.current_question_index, d.creator_score, d.opponent_score, d.current_question_revealed_at].join("|");
 }
+
+// pollMs: 2.5s while waiting; 1s while playing, so — even without
+// realtime — both phones notice the end of a question almost at once and
+// the result card gets its full time on screen.
+function beginDuelStateWatch(id, onChange, pollMs) {
+  teardownDuelStateWatch();
+  const token = ++duelWatchToken;
+  duelLastStateSig = null;
+  const deliver = (row) => {
+    if (token !== duelWatchToken || !row || row.id !== id) return;
+    const sig = duelStateSignature(row);
+    if (sig === duelLastStateSig) return;
+    duelLastStateSig = sig;
+    onChange(row);
+  };
+  duelStateChannel = subscribeToDuelState(id, deliver);
+  duelPollNow = async () => {
+    if (document.visibilityState === "hidden") return;
+    deliver(await fetchDuelState(id));
+  };
+  duelStatePollTimer = setInterval(duelPollNow, pollMs || DUEL_STATE_POLL_MS);
+}
+let duelPollNow = null;
 function teardownDuelStateWatch() {
+  duelWatchToken += 1;
+  if (duelStatePollTimer) { clearInterval(duelStatePollTimer); duelStatePollTimer = null; }
+  duelPollNow = null;
   if (duelStateChannel) {
     unsubscribeFromDuelState(duelStateChannel);
     duelStateChannel = null;
   }
 }
+// Back from the background: check right away instead of waiting a tick.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && duelStatePollTimer && duelPollNow) duelPollNow();
+});
 
+let duelHostGeneratingId = null;
 async function onHostWaitingForAcceptance(duel) {
   if (duel.status === "accepted") {
+    if (duelHostGeneratingId === duel.id) return;
     showDuelWaiting("جارٍ التحضير", "تم القبول! جارٍ تحضير الأسئلة...", null);
     await hostGenerateQuestionsAndWatch(duel.id);
   } else if (duel.status === "declined") {
@@ -2671,6 +2718,8 @@ async function onGuestWaitingForQuestions(duel) {
 }
 
 async function hostGenerateQuestionsAndWatch(id) {
+  if (duelHostGeneratingId === id) return;
+  duelHostGeneratingId = id;
   teardownDuelStateWatch();
   const result = await generateDuelQuestions(id);
   if (!result || !result.ok) {
@@ -2724,6 +2773,41 @@ function stopQuickMatchWaitPoll() {
 }
 
 // -------- live play --------
+// Pacing between questions comes from the SERVER: advance_duel_question()
+// sets the next question's current_question_revealed_at a few seconds in
+// the future, and both phones count down to that same moment:
+//   1. result card — who took the point + the right answer, for both
+//      players, over the question card (DUEL_RESULT_PAUSE_MS);
+//   2. type intro — only when the next question's TYPE changes, time to
+//      read the new type calmly (DUEL_TYPE_INTRO_MS);
+//   3. the question appears and the timer starts.
+// Keep these in step with advance_duel_question() in supabase-schema.sql
+// (3s + 5s) and the first question's pre-roll in the Edge Function (6s).
+const DUEL_RESULT_PAUSE_MS = 3000;
+const DUEL_TYPE_INTRO_MS = 5000;
+const DUEL_FINAL_RESULT_MS = 3000; // last question's result, before the final screen
+const DUEL_PLAY_POLL_MS = 1000;
+
+let duelLoadingIndex = -1;   // question index being prepared (guards double loads)
+let duelFinishing = false;
+let duelLastScores = null;   // { mine, opp } as of the previous question's result
+let duelPlayChain = Promise.resolve();
+
+function duelScoresFor(duel) {
+  const mine = duelIsHost ? duel.creator_score : duel.opponent_score;
+  const opp = duelIsHost ? duel.opponent_score : duel.creator_score;
+  return { mine: mine || 0, opp: opp || 0 };
+}
+
+// State updates are handled strictly one after another — the result card
+// and the type intro take a few seconds, and a newer update (the next
+// question, or "finished") must wait its turn rather than interleave.
+function queueDuelPlayUpdate(row) {
+  duelPlayChain = duelPlayChain
+    .then(() => onDuelStateChangedDuringPlay(row))
+    .catch((e) => console.error("duel update error", e));
+}
+
 async function enterDuelPlay(duel) {
   duelId = duel.id;
   duelIsHost = duel.created_by === currentUser.id;
@@ -2731,11 +2815,20 @@ async function enterDuelPlay(duel) {
   if (!duelOpponentName || duelOpponentName === "الخصم") {
     duelOpponentName = await resolveDuelOpponentName(duel);
   }
+  if (typeof markDuelInviteHandled === "function") markDuelInviteHandled(duel.id);
+
+  duelCurrentQuestion = null;
+  duelLoadingIndex = -1;
+  duelFinishing = false;
+  duelLastScores = duelScoresFor(duel);
+  hideDuelRoundResult();
 
   switchDuelScreen("play");
   renderDuelScoreboard(duel);
-  beginDuelStateWatch(duel.id, onDuelStateChangedDuringPlay);
-  await loadDuelCurrentQuestion(duel);
+  duelPlayChain = Promise.resolve();
+  const first = duelPlayChain = duelPlayChain.then(() => loadDuelCurrentQuestion(duel)).catch((e) => console.error(e));
+  beginDuelStateWatch(duel.id, queueDuelPlayUpdate, DUEL_PLAY_POLL_MS);
+  await first;
 }
 
 function renderDuelScoreboard(duel) {
@@ -2764,70 +2857,199 @@ function renderDuelScoreboard(duel) {
 }
 
 async function onDuelStateChangedDuringPlay(duel) {
+  if (duelId !== duel.id) return;
+
   if (duel.status === "finished") {
+    if (duelFinishing) return;
+    duelFinishing = true;
     teardownDuelStateWatch();
+    stopDuelTimer();
+    duelAnswered = true;
+    lockDuelChoices();
+    renderDuelScoreboard(duel);
+    // A normal ending: show the last question's result first, like every
+    // other question. (A forfeit goes straight to the final screen.)
+    if (!duel.forfeited_by && duelCurrentQuestion) {
+      await showDuelRoundResult(duelCurrentQuestion, duel, Date.now() + DUEL_FINAL_RESULT_MS, { final: true });
+    }
+    hideDuelRoundResult();
     await showDuelResults(duel);
     return;
   }
+  if (duel.status !== "active") return;
 
   renderDuelScoreboard(duel);
 
-  if (duel.current_question_index !== (duelCurrentQuestion?.question_index ?? -1)) {
+  if (duel.current_question_index > (duelCurrentQuestion?.question_index ?? -1)) {
     await loadDuelCurrentQuestion(duel);
   }
 }
 
-async function loadDuelCurrentQuestion(duel, attempt = 0) {
-  if (attempt === 0) duelFlashcardWrap.scrollIntoView({ behavior: "smooth", block: "start" });
+function duelQuestionHasContent(q) {
+  return !!q && Array.isArray(q.choices) && q.choices.length > 0;
+}
 
-  duelAnswered = false;
+// The server hides a question's text/choices until its reveal moment
+// (duel_questions_public), so they're fetched again then — retrying
+// briefly in case this phone's clock is slightly ahead.
+async function fetchDuelQuestionContent(id, index) {
+  for (let i = 0; i < 20; i++) {
+    const q = await fetchDuelQuestion(id, index);
+    if (duelId !== id) return null;
+    if (duelQuestionHasContent(q)) return q;
+    await new Promise((r) => setTimeout(r, 350));
+  }
+  return null;
+}
+
+async function loadDuelCurrentQuestion(duel) {
+  const idx = duel.current_question_index;
+  if (duelLoadingIndex === idx) return;
+  duelLoadingIndex = idx;
+
+  const previous = duelCurrentQuestion; // the question that just ended (if any)
+  duelAnswered = true; // nothing is answerable until the new question appears
   duelRoundStatus.style.display = "none";
   stopDuelTimer();
   stopDuelTypeIntroCountdown();
   duelAudioStop();
 
-  const q = await fetchDuelQuestion(duel.id, duel.current_question_index);
-  // The duel may have ended / been left while we were waiting.
-  if (duelId !== duel.id) return;
+  // The new question's TYPE is readable straight away (its content only
+  // at the reveal moment) — enough to know whether a type intro is due.
+  let q = null;
+  for (let attempt = 0; attempt < 10 && !q; attempt++) {
+    q = await fetchDuelQuestion(duel.id, idx);
+    if (duelId !== duel.id) return;
+    if (!q) await new Promise((r) => setTimeout(r, 800)); // transient fetch hiccup
+  }
   if (!q) {
-    if (attempt >= 10) {
-      // Give up retrying; the claim-forfeit button and the realtime
-      // subscription remain available, so the player isn't stuck.
+    // Give up retrying; the claim-forfeit button and the state watch
+    // remain available, so the player isn't stuck.
+    duelLoadingIndex = -1;
+    duelRoundStatus.style.display = "block";
+    duelRoundStatus.className = "duel-round-status timeout";
+    duelRoundStatus.textContent = "تعذّر تحميل السؤال. تحقق من الاتصال بالإنترنت.";
+    return;
+  }
+
+  const revealAt = duel.current_question_revealed_at ? new Date(duel.current_question_revealed_at).getTime() : Date.now();
+
+  // 1. who took the previous point — over the card, for both players
+  if (previous && previous.question_index < idx) {
+    const typeChanges = previous.question_type !== q.question_type;
+    const resultEnd = revealAt - (typeChanges ? DUEL_TYPE_INTRO_MS : 0);
+    await showDuelRoundResult(previous, duel, resultEnd);
+    hideDuelRoundResult();
+    if (duelId !== duel.id || duelLoadingIndex !== idx) return;
+  }
+  duelCurrentQuestion = q;
+
+  // 2. a new type: announce it until the reveal moment
+  if (revealAt - Date.now() > 250) {
+    await new Promise((resolve) => showDuelTypeIntro(q.question_type, revealAt - Date.now(), resolve));
+    if (duelId !== duel.id || duelLoadingIndex !== idx) return;
+  }
+
+  // 3. the question itself
+  if (!duelQuestionHasContent(q)) {
+    q = await fetchDuelQuestionContent(duel.id, idx);
+    if (duelId !== duel.id || duelLoadingIndex !== idx) return;
+    if (!q) {
+      duelLoadingIndex = -1;
       duelRoundStatus.style.display = "block";
       duelRoundStatus.className = "duel-round-status timeout";
       duelRoundStatus.textContent = "تعذّر تحميل السؤال. تحقق من الاتصال بالإنترنت.";
       return;
     }
-    setTimeout(() => loadDuelCurrentQuestion(duel, attempt + 1), 800); // transient fetch hiccup — retry shortly
-    return;
+    duelCurrentQuestion = q;
   }
-  duelCurrentQuestion = q;
+  duelAnswered = false;
+  revealDuelQuestionCard(q);
+  startDuelTimer(duel);
+  duelFlashcardWrap.scrollIntoView({ behavior: "smooth", block: "start" });
+}
 
-  // advance_duel_question() (and the Edge Function, for question 1)
-  // sets current_question_revealed_at a few seconds in the future
-  // whenever the type is about to change, specifically so both
-  // players get a synced beat to notice the new type before the
-  // timer starts — same idea as offline mode's type-intro screen,
-  // just without needing a mutual "ready" handshake since both
-  // clients compute this identically off the same server timestamp.
-  const revealedAt = duel.current_question_revealed_at ? new Date(duel.current_question_revealed_at).getTime() : Date.now();
-  const preRollMs = revealedAt - Date.now();
+// ---- between questions: the result card ----
+let duelResultTimer = null;
 
-  if (preRollMs > 250) {
-    showDuelTypeIntro(q.question_type, preRollMs, () => {
-      revealDuelQuestionCard(q);
-      startDuelTimer(duel);
-    });
+function hideDuelRoundResult() {
+  if (duelResultTimer) { clearInterval(duelResultTimer); duelResultTimer = null; }
+  duelRoundResult.style.display = "none";
+  duelRoundResult.innerHTML = "";
+}
+
+// Shows, over the question card, who took the point of `question`, the
+// right answer and the score, with a countdown — until `until` (ms).
+// Resolves when it's time to move on.
+async function showDuelRoundResult(question, duel, until, opts) {
+  const final = !!(opts && opts.final);
+  const scores = duelScoresFor(duel);
+  const before = duelLastScores || { mine: 0, opp: 0 };
+  duelLastScores = scores;
+  if (until - Date.now() < 600) return; // no pause left (older server setup) — skip the card
+
+  // The server says who won the point and the right answer once the
+  // question is over (re-run supabase-schema.sql for this); without
+  // that, the score change still tells who took it.
+  const done = await fetchDuelQuestion(duel.id, question.question_index);
+  let winner;
+  if (done && "winner_user_id" in done && done.correct_index != null) {
+    winner = done.winner_user_id === currentUser.id ? "me" : (done.winner_user_id ? "opp" : "none");
   } else {
-    revealDuelQuestionCard(q);
-    startDuelTimer(duel);
+    winner = scores.mine > before.mine ? "me" : (scores.opp > before.opp ? "opp" : "none");
   }
+  const correctIdx = done && done.correct_index != null ? done.correct_index : null;
+  const choices = (done && Array.isArray(done.choices) && done.choices.length) ? done.choices : (question.choices || []);
+  const answer = correctIdx != null ? choices[correctIdx] : null;
+
+  // Also mark the right answer on the card underneath.
+  if (correctIdx != null) {
+    const btn = duelMcqChoices.children[correctIdx];
+    if (btn) btn.classList.add("correct");
+  }
+  lockDuelChoices();
+  duelRoundStatus.style.display = "none";
+  stopDuelTimer();
+  duelAudioStop();
+
+  const head = winner === "me"
+    ? { cls: "me", icon: "🎉", text: "أنت أخذت النقطة!" }
+    : winner === "opp"
+      ? { cls: "opp", icon: "⚡", text: `${escapeDuelHtml(duelOpponentName)} أخذ النقطة` }
+      : { cls: "none", icon: "⏱️", text: "لم يأخذ أحد النقطة" };
+
+  duelRoundResult.className = `duel-round-result ${head.cls}`;
+  duelRoundResult.innerHTML = `
+    <div class="duel-round-result-icon">${head.icon}</div>
+    <div class="duel-round-result-title">${head.text}</div>
+    ${answer ? `<div class="duel-round-result-answer"><span>الإجابة الصحيحة:</span> <span class="quran-text">${escapeDuelHtml(answer)}</span></div>` : ""}
+    <div class="duel-round-result-score">أنت <b>${scores.mine}</b> — <b>${scores.opp}</b> ${escapeDuelHtml(duelOpponentName)}</div>
+    <div class="duel-round-result-next" id="duelRoundResultNext"></div>`;
+  duelRoundResult.style.display = "flex";
+  duelFlashcard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  const nextEl = document.getElementById("duelRoundResultNext");
+  await new Promise((resolve) => {
+    const tick = () => {
+      const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+      nextEl.textContent = final ? "النتيجة النهائية..." : `السؤال التالي خلال ${left}`;
+      if (Date.now() >= until) {
+        clearInterval(duelResultTimer);
+        duelResultTimer = null;
+        resolve();
+      }
+    };
+    if (duelResultTimer) clearInterval(duelResultTimer);
+    duelResultTimer = setInterval(tick, 200);
+    tick();
+  });
 }
 
 function showDuelTypeIntro(type, preRollMs, onDone) {
   duelQuestionArea.style.display = "none";
   duelTypeIntro.style.display = "block";
   duelTypeIntroLabel.textContent = getTypeLabel(type);
+  if (duelTypeIntroDesc) duelTypeIntroDesc.textContent = getTypeDescription(type) || "";
 
   stopDuelTypeIntroCountdown();
   const endsAt = Date.now() + preRollMs;
@@ -2850,6 +3072,7 @@ function stopDuelTypeIntroCountdown() {
 function revealDuelQuestionCard(q) {
   duelTypeIntro.style.display = "none";
   duelQuestionArea.style.display = "block";
+  hideDuelRoundResult();
 
   duelFlashcard.classList.toggle("audio-question", !!q.is_audio_only);
   duelCardHelp.textContent = `النوع: ${getTypeLabel(q.question_type)}`;
@@ -2938,7 +3161,8 @@ async function submitMyDuelAnswer(choiceIndex) {
   // goes) or the shared timer will move things along instead, so a
   // lone wrong guess can no longer cut off the other player's turn.
   if (result.wonPoint || result.bothAnswered) {
-    setTimeout(() => tryAdvanceDuelQuestion(questionIndex), 1400);
+    // short beat, then on to the result card both players see
+    setTimeout(() => tryAdvanceDuelQuestion(questionIndex), 600);
   }
 }
 
@@ -3014,9 +3238,9 @@ async function tryAdvanceDuelQuestion(questionIndex, attempt = 0) {
         }
       }, 1000);
     }
-    // No need to act on the result — the realtime subscription
-    // (onDuelStateChangedDuringPlay) delivers the new question index
-    // (or 'finished' status) to both players uniformly.
+    // The new question index (or 'finished') reaches both players through
+    // the state watch — ask right away rather than wait for the next tick.
+    if (result && result.ok && duelPollNow) duelPollNow();
   } finally {
     duelAdvancePending = false;
   }

@@ -27,6 +27,10 @@ const authSuccessNotice = document.getElementById("authSuccessNotice");
 const authSuccessText = document.getElementById("authSuccessText");
 const authSuccessOkBtn = document.getElementById("authSuccessOkBtn");
 const authForgotBtn = document.getElementById("authForgotBtn");
+const authSuccessExtra = document.getElementById("authSuccessExtra");
+const authPendingConfirm = document.getElementById("authPendingConfirm");
+const authPendingText = document.getElementById("authPendingText");
+const authPendingResendBtn = document.getElementById("authPendingResendBtn");
 
 const statsBody = document.getElementById("statsBody");
 const sessionChips = document.getElementById("sessionChips");
@@ -122,6 +126,11 @@ function switchView(name, options) {
   if (changed) window.scrollTo(0, 0);
 
   Object.entries(appViews).forEach(([key, el]) => el.classList.toggle("active", key === name));
+  // The Mushaf reader sizes itself to exactly one screen (see
+  // resizeQuranShell() in quran-reader.js), so it doesn't need .wrap's
+  // generic top/bottom spacing — more height for the page itself.
+  const wrapEl = document.querySelector(".wrap");
+  if (wrapEl) wrapEl.classList.toggle("reading-quran", name === "quran");
   bottomNavButtons.forEach((btn) => {
     const on = btn.dataset.view === name;
     btn.classList.toggle("active", on);
@@ -187,7 +196,9 @@ function hideModal(el) { el.style.display = "none"; }
 function resetAuthModalView() {
   authFormFields.style.display = "block";
   authSuccessNotice.style.display = "none";
+  authSuccessExtra.innerHTML = "";
   authError.style.display = "none";
+  updatePendingConfirmBox();
   authPassword.type = "password";
   authPasswordToggle.textContent = "👁️";
   authPasswordToggle.setAttribute("aria-label", "إظهار كلمة المرور");
@@ -214,6 +225,107 @@ function setAuthMode(mode) {
   resetAuthModalView();
 }
 
+// -------- waiting for the sign-up confirmation email --------
+// After signing up (with email confirmation on in Supabase) the account
+// can't log in until the link in the email is opened. The address is
+// remembered on this device until a successful login, so the login
+// dialog keeps reminding — with a "send it again" button — even if the
+// person closed it and came back later.
+const PENDING_CONFIRM_KEY = "qf_pending_confirm_email";
+function getPendingConfirmEmail() {
+  try { return localStorage.getItem(PENDING_CONFIRM_KEY) || ""; } catch (e) { return ""; }
+}
+function setPendingConfirmEmail(email) {
+  try {
+    if (email) localStorage.setItem(PENDING_CONFIRM_KEY, email);
+    else localStorage.removeItem(PENDING_CONFIRM_KEY);
+  } catch (e) { /* ignore */ }
+}
+
+function updatePendingConfirmBox(forceEmail) {
+  const email = forceEmail || getPendingConfirmEmail();
+  const show = !!email && authMode === "login" && authFormFields.style.display !== "none";
+  authPendingConfirm.style.display = show ? "block" : "none";
+  if (!show) return;
+  authPendingText.textContent =
+    `📧 حسابك (${email}) بانتظار التفعيل: افتح رسالة «تأكيد التسجيل» في بريدك واضغط الرابط، ثم سجّل الدخول هنا.`;
+  authPendingResendBtn.dataset.email = email;
+}
+
+// Resend with a 60-second cooldown (Supabase refuses faster resends anyway).
+const RESEND_COOLDOWN_S = 60;
+async function resendConfirmation(email, btn, statusEl) {
+  if (!email || btn.disabled) return;
+  btn.disabled = true;
+  const label = btn.textContent;
+  const setStatus = (t) => { if (statusEl) statusEl.textContent = t; };
+  setStatus("جارٍ الإرسال...");
+  try {
+    await resendSignupEmail(email);
+    setStatus(`✅ أُرسل رابط جديد إلى ${email}.`);
+    let left = RESEND_COOLDOWN_S;
+    const tick = () => {
+      if (left <= 0) { btn.disabled = false; btn.textContent = label; return; }
+      btn.textContent = `إعادة الإرسال بعد ${left} ث`;
+      left -= 1;
+      setTimeout(tick, 1000);
+    };
+    tick();
+  } catch (err) {
+    setStatus(translateAuthError(err && err.message));
+    btn.disabled = false;
+  }
+}
+
+authPendingResendBtn.addEventListener("click", () => {
+  const email = authEmail.value.trim().toLowerCase() || authPendingResendBtn.dataset.email;
+  resendConfirmation(email, authPendingResendBtn, authPendingText);
+});
+
+function showSignupEmailNotice(email) {
+  const inApp = !!window.QF_IS_NATIVE_APP;
+  authFormFields.style.display = "none";
+  authSuccessNotice.style.display = "block";
+  authSuccessText.textContent = "🎉 تم إنشاء حسابك! بقيت خطوة واحدة: تفعيل بريدك الإلكتروني.";
+  authSuccessExtra.innerHTML = "";
+
+  const steps = document.createElement("ol");
+  steps.className = "auth-steps";
+  const li1 = document.createElement("li");
+  const emailEl = document.createElement("b");
+  emailEl.dir = "ltr";
+  emailEl.textContent = email;
+  li1.append("افتح بريدك ", emailEl, " وابحث عن رسالة «تأكيد التسجيل» (Confirm your signup).");
+  const li2 = document.createElement("li");
+  li2.textContent = inApp
+    ? "اضغط على رابط التفعيل داخل الرسالة — سيُفتح في متصفح الهاتف، وهذا طبيعي."
+    : "اضغط على رابط التفعيل داخل الرسالة.";
+  const li3 = document.createElement("li");
+  li3.textContent = inApp
+    ? "ارجع إلى التطبيق وسجّل الدخول بنفس البريد وكلمة المرور."
+    : "ارجع إلى هنا وسجّل الدخول بنفس البريد وكلمة المرور.";
+  steps.append(li1, li2, li3);
+
+  const hint = document.createElement("div");
+  hint.className = "modal-hint";
+  hint.textContent = "لم تصلك الرسالة خلال بضع دقائق؟ تفقّد مجلد الرسائل غير المرغوب فيها (Spam / Junk)، أو أعد الإرسال:";
+
+  const row = document.createElement("div");
+  row.className = "auth-resend-row";
+  const resendBtn = document.createElement("button");
+  resendBtn.type = "button";
+  resendBtn.className = "btn small ghost";
+  resendBtn.textContent = "📨 إعادة إرسال رابط التفعيل";
+  const status = document.createElement("div");
+  status.className = "auth-resend-status";
+  resendBtn.addEventListener("click", () => resendConfirmation(email, resendBtn, status));
+  row.append(resendBtn, status);
+
+  authSuccessExtra.append(steps, hint, row);
+  authSuccessOkBtn.textContent = "حسناً، سأسجّل الدخول بعد التفعيل";
+  setPendingConfirmEmail(email);
+}
+
 tabLogin.addEventListener("click", () => setAuthMode("login"));
 tabSignup.addEventListener("click", () => setAuthMode("signup"));
 
@@ -225,6 +337,8 @@ function openLoginModal() {
     authError.style.display = "block";
   }
   setAuthMode("login");
+  const pending = getPendingConfirmEmail();
+  if (pending && !authEmail.value) authEmail.value = pending;
   showModal(authModal);
 }
 
@@ -245,6 +359,7 @@ document.addEventListener("keydown", (e) => {
 authSuccessOkBtn.addEventListener("click", () => {
   authSuccessOkBtn.textContent = "حسناً، سأسجّل الدخول بعد التفعيل";
   setAuthMode("login");
+  authSuccessExtra.innerHTML = "";
   authEmail.value = authEmail.value; // keep email prefilled for convenience
   authPassword.value = "";
 });
@@ -311,20 +426,21 @@ authFormFields.addEventListener("submit", async (e) => {
         authName.value = "";
       } else {
         // Email confirmation required — tell them clearly what to do next.
-        authFormFields.style.display = "none";
-        authSuccessNotice.style.display = "block";
-        authSuccessText.textContent =
-          `تم إنشاء حسابك بنجاح! أرسلنا رابط تفعيل إلى ${email}. ` +
-          `افتح بريدك الإلكتروني واضغط على الرابط لتفعيل الحساب، ثم عد إلى هنا وسجّل الدخول.`;
+        showSignupEmailNotice(email);
       }
     } else {
       await signIn(email, password);
+      setPendingConfirmEmail("");
       hideModal(authModal);
       authEmail.value = "";
       authPassword.value = "";
     }
   } catch (err) {
     showAuthError(translateAuthError(err && err.message));
+    if (authMode === "login" && /Email not confirmed/i.test((err && err.message) || "")) {
+      setPendingConfirmEmail(email);
+      updatePendingConfirmBox(email);
+    }
   } finally {
     authSubmitBtn.disabled = false;
     authSubmitBtn.textContent = idleLabel;
@@ -346,9 +462,11 @@ authForgotBtn.addEventListener("click", async () => {
     await requestPasswordReset(email);
     authFormFields.style.display = "none";
     authSuccessNotice.style.display = "block";
-    authSuccessText.textContent =
-      `إذا كان هناك حساب بالبريد ${email} فستصلك رسالة خلال دقائق. ` +
-      `افتح الرابط في الرسالة من هذا المتصفح لاختيار كلمة مرور جديدة.`;
+    authSuccessText.textContent = window.QF_IS_NATIVE_APP
+      ? `إذا كان هناك حساب بالبريد ${email} فستصلك رسالة خلال دقائق. ` +
+        `اضغط الرابط في الرسالة — سيُفتح موقع إتقان في المتصفح لتختار كلمة مرور جديدة — ثم ارجع إلى التطبيق وسجّل الدخول بها.`
+      : `إذا كان هناك حساب بالبريد ${email} فستصلك رسالة خلال دقائق. ` +
+        `افتح الرابط في الرسالة من هذا المتصفح لاختيار كلمة مرور جديدة.`;
     authSuccessOkBtn.textContent = "حسناً";
   } catch (err) {
     showAuthError(translateAuthError(err && err.message));
@@ -397,7 +515,7 @@ newPasswordForm.addEventListener("submit", async (e) => {
 function translateAuthError(msg) {
   if (!msg) return "حدث خطأ. حاول مرة أخرى.";
   if (msg.includes("already registered")) return "هذا البريد مسجّل بالفعل. جرّب تسجيل الدخول.";
-  if (msg.includes("Email not confirmed")) return "لم يتم تفعيل البريد الإلكتروني بعد. تحقق من صندوق الوارد لديك.";
+  if (msg.includes("Email not confirmed")) return "لم يتم تفعيل البريد الإلكتروني بعد — افتح رابط التفعيل الذي أرسلناه إلى بريدك.";
   if (msg.includes("Invalid login")) return "بيانات الدخول غير صحيحة.";
   if (msg.includes("Password should be")) return "كلمة المرور يجب أن تكون 6 أحرف على الأقل.";
   if (/rate limit|too many|security purposes/i.test(msg)) return "محاولات كثيرة خلال وقت قصير. انتظر قليلًا ثم حاول مرة أخرى.";
@@ -542,8 +660,28 @@ const duelInviteBannerTitle = document.getElementById("duelInviteBannerTitle");
 const duelInviteBannerDesc = document.getElementById("duelInviteBannerDesc");
 const duelInviteBannerActions = document.getElementById("duelInviteBannerActions");
 
+// app.js's current duel id. app.js loads after this file, so its
+// variables don't exist yet during the first moments of a page load.
+function activeDuelIdSafe() {
+  try { return duelId; } catch (e) { return null; }
+}
+
+// Invites already acted on (accepted / declined / joined) on this device,
+// and the one on screen now — so the polling below never shows the same
+// invite twice.
+const handledDuelInviteIds = new Set();
+let shownDuelInviteId = null;
+
+// Called by app.js when this device enters a duel by any route (banner,
+// ⚔️ tab, quick-match poll) so its invite is never offered again.
+function markDuelInviteHandled(id) {
+  handledDuelInviteIds.add(id);
+  if (shownDuelInviteId === id) hideDuelInviteBanner();
+}
+
 function hideDuelInviteBanner() {
   if (duelInviteBanner) duelInviteBanner.style.display = "none";
+  shownDuelInviteId = null;
 }
 
 // Summarizes a duel's settings (range/timer/types/count) so the
@@ -559,6 +697,10 @@ function describeDuelConfig(cfg) {
 
 function renderDuelInviteBanner(invite) {
   if (!duelInviteBanner) return;
+  if (handledDuelInviteIds.has(invite.id)) return;
+  // Already playing / waiting in this very duel (e.g. quick match).
+  if (activeDuelIdSafe() === invite.id) return;
+  if (shownDuelInviteId === invite.id && duelInviteBanner.style.display !== "none") return;
   duelInviteBannerActions.innerHTML = "";
   const configLine = describeDuelConfig(invite);
 
@@ -571,6 +713,7 @@ function renderDuelInviteBanner(invite) {
     acceptBtn.className = "btn small";
     acceptBtn.textContent = "قبول";
     acceptBtn.addEventListener("click", async () => {
+      handledDuelInviteIds.add(invite.id);
       hideDuelInviteBanner();
       const result = await respondDuelInvite(invite.id, true);
       if (result?.ok && typeof onDuelInviteAccepted === "function") {
@@ -585,6 +728,7 @@ function renderDuelInviteBanner(invite) {
     declineBtn.className = "btn small ghost";
     declineBtn.textContent = "رفض";
     declineBtn.addEventListener("click", async () => {
+      handledDuelInviteIds.add(invite.id);
       hideDuelInviteBanner();
       await respondDuelInvite(invite.id, false);
     });
@@ -600,6 +744,7 @@ function renderDuelInviteBanner(invite) {
     joinBtn.className = "btn small";
     joinBtn.textContent = "انضمام";
     joinBtn.addEventListener("click", async () => {
+      handledDuelInviteIds.add(invite.id);
       hideDuelInviteBanner();
       if (typeof onDuelInviteAccepted === "function") await onDuelInviteAccepted(invite.id);
     });
@@ -609,6 +754,7 @@ function renderDuelInviteBanner(invite) {
   }
 
   duelInviteBanner.style.display = "flex";
+  shownDuelInviteId = invite.id;
 }
 
 // Normalizes a raw realtime INSERT payload into the same shape
@@ -630,6 +776,42 @@ async function handleIncomingDuelRow(row) {
     count_per_type: row.count_per_type,
   });
 }
+
+// -------- invites: polling fallback --------
+// The live (realtime) notification is the fast path, but it can silently
+// fail — Realtime not enabled for the Supabase project, a phone that put
+// the app to sleep, a flaky network — and then a challenge never showed
+// up on the other phone. So while signed in, the app also asks the server
+// every few seconds (only while the screen is on, and right away when it
+// comes back on). One tiny query; my_incoming_duel_invites only returns
+// invites from the last 10 minutes.
+const INVITE_POLL_MS = 5000;
+let invitePollTimer = null;
+
+async function pollIncomingDuelInvitesOnce() {
+  if (!currentUser || document.visibilityState === "hidden") return;
+  if (typeof fetchMyIncomingDuelInvites !== "function") return;
+  if (activeDuelIdSafe()) return; // busy in a duel already
+  const invites = await fetchMyIncomingDuelInvites();
+  const next = (invites || []).find((i) =>
+    (i.status === "pending" || i.status === "accepted") && !handledDuelInviteIds.has(i.id));
+  if (next) renderDuelInviteBanner(next);
+  else if (shownDuelInviteId && !(invites || []).some((i) => i.id === shownDuelInviteId)) {
+    hideDuelInviteBanner(); // the challenger cancelled it, or it expired
+  }
+}
+
+function startIncomingInvitePoll() {
+  stopIncomingInvitePoll();
+  pollIncomingDuelInvitesOnce();
+  invitePollTimer = setInterval(pollIncomingDuelInvitesOnce, INVITE_POLL_MS);
+}
+function stopIncomingInvitePoll() {
+  if (invitePollTimer) { clearInterval(invitePollTimer); invitePollTimer = null; }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && invitePollTimer) pollIncomingDuelInvitesOnce();
+});
 
 let lastAuthUserId; // undefined until the very first call
 
@@ -663,6 +845,7 @@ onAuthChange(async (user, info) => {
     if (typeof subscribeToIncomingDuelInvites === "function") {
       subscribeToIncomingDuelInvites((row) => handleIncomingDuelRow(row));
     }
+    startIncomingInvitePoll();
     if (typeof initKnownAchievementCache === "function") await initKnownAchievementCache();
   } else {
     guestActions.style.display = "flex";
@@ -675,6 +858,8 @@ onAuthChange(async (user, info) => {
     selectedSessionId = null;
 
     if (typeof unsubscribeFromIncomingDuelInvites === "function") unsubscribeFromIncomingDuelInvites();
+    stopIncomingInvitePoll();
+    handledDuelInviteIds.clear();
     hideDuelInviteBanner();
     hideModal(newPasswordModal);
     if (!deleteAccountBusy) hideModal(deleteAccountModal);

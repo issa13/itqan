@@ -84,6 +84,11 @@ need this at all.
 5. That's it. Test duels by challenging a friend (or yourself, from two
    browser profiles) from ⚔️ تحديات → مباشر.
 
+Online duels work best with Supabase **Realtime** on (Database →
+Publications → `supabase_realtime` should include `duels` — the schema adds
+it), but they no longer depend on it: the app also checks the server every
+few seconds, so invites and duels still arrive if Realtime isn't working.
+
 If this step is skipped, offline duels, solo mode, stats, friends, and
 the leaderboard all still work fine — starting an online duel will
 just fail with "تعذّر تحضير أسئلة التحدي" until the function is deployed.

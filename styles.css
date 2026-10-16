@@ -147,6 +147,15 @@ body::before {
   gap: 14px;
 }
 
+/* 📖 tab: the reader is sized to exactly one screen by resizeQuranShell()
+   (its bottom margin clears the fixed nav), so .wrap's generic spacing is
+   trimmed to give the Mushaf page more height. */
+.wrap.reading-quran {
+  padding-top: calc(6px + env(safe-area-inset-top, 0px));
+  padding-bottom: 0;
+  gap: 6px;
+}
+
 /* -------- App views (swapped by the bottom nav — no popups) -------- */
 .app-view {
   display: none;
@@ -1047,6 +1056,31 @@ select:focus, input:focus {
   line-height: 1.7;
 }
 
+/* Sign-up: "check your email" steps + resend */
+.auth-steps {
+  text-align: start;
+  margin: 12px 0 4px;
+  padding-inline-start: 22px;
+  font-size: 13px;
+  line-height: 1.85;
+  color: var(--ink);
+}
+.auth-steps li { margin-bottom: 6px; }
+.auth-steps b { color: var(--accent-text); word-break: break-all; }
+.auth-resend-row { margin-top: 10px; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.auth-resend-status { font-size: 12px; color: var(--muted); min-height: 1em; }
+.auth-pending {
+  margin-top: 10px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ink);
+  background: rgba(var(--gold-rgb), 0.12);
+  border: 1px solid rgba(var(--gold-rgb), 0.35);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+}
+.auth-pending .link-btn { margin-top: 4px; }
+
 .auth-success {
   text-align: center;
   padding: 6px 4px 2px;
@@ -1482,6 +1516,45 @@ select:focus, input:focus {
 .duel-round-status.lost { background: var(--danger-bg); color: var(--danger); }
 .duel-round-status.waiting { background: rgba(var(--gold-rgb), 0.12); color: var(--gold); }
 .duel-round-status.timeout { background: rgba(var(--ink-rgb), 0.06); color: var(--muted); }
+#duelRoundStatus { width: 100%; margin: 8px 0 0; }
+
+/* Between questions: result card over the question card (both players) */
+#duelFlashcard { position: relative; }
+.duel-round-result {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  text-align: center;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--card) 94%, transparent);
+  backdrop-filter: blur(2px);
+  animation: duelResultIn 0.25s var(--ease);
+}
+@keyframes duelResultIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
+.duel-round-result-icon { font-size: 40px; line-height: 1; }
+.duel-round-result-title { font-family: 'Aref Ruqaa', serif; font-weight: 700; font-size: 22px; }
+.duel-round-result.me .duel-round-result-title { color: var(--success); }
+.duel-round-result.opp .duel-round-result-title { color: var(--danger); }
+.duel-round-result.none .duel-round-result-title { color: var(--muted); }
+.duel-round-result-answer { font-size: 13px; color: var(--muted); line-height: 1.9; max-width: 100%; }
+.duel-round-result-answer .quran-text {
+  font-family: 'Amiri Quran', 'Tajawal', serif;
+  font-size: 17px;
+  color: var(--ink);
+  background: var(--success-bg);
+  border-radius: 8px;
+  padding: 2px 8px;
+  display: inline-block;
+}
+.duel-round-result-score { font-size: 14px; font-weight: 700; color: var(--ink); }
+.duel-round-result-score b { font-size: 18px; color: var(--accent-text); }
+.duel-round-result-next { font-size: 12px; font-weight: 800; color: var(--gold); margin-top: 2px; }
 
 /* -------- Global incoming-duel-invite banner -------- */
 .duel-invite-banner {
@@ -2345,24 +2418,73 @@ select:focus, input:focus {
 }
 .quran-reciter-check { color: var(--emerald); font-weight: 900; }
 
-.quran-listen-player {
-  margin-top: 14px;
-  padding: 12px;
-  border-radius: var(--radius-sm);
-  background: var(--success-bg);
-  border: 1.5px solid rgba(var(--emerald-rgb), 0.3);
-  text-align: center;
-}
-.quran-listen-now-playing {
-  font-weight: 800;
-  font-size: 14px;
-  color: var(--accent-text);
-}
-.quran-listen-controls {
+/* Quick presets at the top of the listen dialog */
+.quran-listen-presets {
   display: flex;
   gap: 8px;
-  justify-content: center;
-  margin-top: 10px;
+  margin-bottom: 4px;
+}
+.quran-listen-presets .btn { flex: 1; }
+
+/* Recitation mini player — fixed just above the bottom nav (its bottom
+   offset is set from the nav's real height in quran-reader.js), so the
+   Mushaf page stays visible to read along. */
+.quran-mini-player {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+  z-index: 39;
+  width: min(94vw, var(--maxw));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 14px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1.5px solid rgba(var(--emerald-rgb), 0.35);
+  box-shadow: var(--shadow-pop);
+}
+.quran-mini-now {
+  flex: 1;
+  min-width: 0;
+  font-weight: 800;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--accent-text);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.quran-mini-controls { display: flex; gap: 6px; flex-shrink: 0; }
+.quran-mini-controls .btn { padding: 6px 12px; font-size: 15px; line-height: 1; }
+/* 🔁 repeat: dimmed while off (plays once), highlighted with its count when on */
+.quran-mini-controls .quran-repeat-btn { padding: 6px 9px; font-size: 13px; font-weight: 800; opacity: 0.55; white-space: nowrap; }
+.quran-mini-controls .quran-repeat-btn.on {
+  opacity: 1;
+  background: var(--success-bg);
+  border-color: rgba(var(--emerald-rgb), 0.45);
+  color: var(--accent-text);
+}
+
+/* Page-turn row: 🎧 listen-to-page sits right next to the page number */
+.quran-page-center { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.quran-page-listen { padding: 5px 9px; font-size: 15px; line-height: 1; }
+.quran-page-listen.playing { background: var(--success-bg); border-color: rgba(var(--emerald-rgb), 0.45); }
+
+/* While the player shows, the other tabs scroll far enough that their
+   last item isn't hidden behind it (the 📖 tab makes room by itself). */
+body.quran-player-on .wrap:not(.reading-quran) {
+  padding-bottom: calc(150px + env(safe-area-inset-bottom, 0px));
+}
+
+/* The ayah being recited (range / page listening) — background only, no
+   padding, so highlighting never changes the justified line widths. */
+.quran-word.quran-ayah-playing {
+  background: rgba(var(--emerald-rgb), 0.16);
+  box-shadow: 0 0 0 2px rgba(var(--emerald-rgb), 0.16);
+  border-radius: 4px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2428,4 +2550,14 @@ select:focus, input:focus {
   .quran-page-viewport { padding: 10px 10px 8px; }
   .quran-page-nav { margin-top: 6px; padding-top: 6px; }
   .quran-shell { gap: 6px; }
+}
+
+/* Phones: every pixel the reader's frame doesn't need goes to the Mushaf
+   page itself — slimmer frame padding and a compact page-turn row. */
+@media (max-width: 600px) {
+  .quran-page-viewport { padding: 10px 8px 6px; }
+  .quran-page-content { padding-inline: 4px; }
+  .quran-page-nav { margin-top: 4px; padding-top: 5px; gap: 6px; }
+  .quran-page-nav .btn { padding: 6px 12px; font-size: 13px; }
+  .quran-page-indicator { font-size: 12px; }
 }

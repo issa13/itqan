@@ -255,12 +255,17 @@ function resizeQuranShell() {
   const top = quranShellEl.getBoundingClientRect().top + window.scrollY;
   const nav = document.getElementById("bottomNav");
   const navHeight = nav ? nav.offsetHeight : 0;
-  // .wrap's bottom padding is what keeps content clear of the fixed nav;
-  // using it (plus the shell's own margin) makes the page exactly one
-  // screen tall, so the reader never scrolls.
-  const wrapPaddingBottom = parseFloat(getComputedStyle(wrapEl).paddingBottom) || 0;
-  const shellMarginBottom = parseFloat(getComputedStyle(quranShellEl).marginBottom) || 0;
-  const reserved = Math.max(navHeight + 12, wrapPaddingBottom + shellMarginBottom);
+  // While reading, .wrap has no bottom padding of its own (.wrap.reading-
+  // quran — see switchView() in auth-ui.js); the shell's bottom margin
+  // keeps the page buttons just above the fixed nav (and above the
+  // recitation mini player when it's showing), which makes the page
+  // exactly one screen tall — the reader never scrolls, and the Mushaf
+  // page gets all the remaining height (it used to lose ~35px to the
+  // generic 96px bottom padding every other tab needs).
+  const player = document.getElementById("quranListenPlayer");
+  const playerHeight = (player && player.style.display !== "none") ? player.offsetHeight + 6 : 0;
+  const reserved = navHeight + 5 + playerHeight;
+  quranShellEl.style.marginBottom = reserved + "px";
   const available = window.innerHeight - top - reserved;
   quranShellEl.style.height = Math.max(360, available) + "px";
   fitMushafPage();
@@ -470,7 +475,8 @@ function renderMushafWordHtml(word) {
     ? `<mark class="quran-highlight">${escapeQuranHtml(text)}</mark>`
     : escapeQuranHtml(text);
 
-  let html = `<span class="quran-word${isTarget ? " quran-ayah-target" : ""}">${textHtml}</span>`;
+  const keyAttr = (surahNum && ayahNum) ? ` data-k="${surahNum}:${ayahNum}"` : "";
+  let html = `<span class="quran-word${isTarget ? " quran-ayah-target" : ""}"${keyAttr}>${textHtml}</span>`;
 
   // Only the ayah-ending word (the one carrying the embedded number)
   // gets the listen button + number badge — matches the printed
@@ -615,6 +621,7 @@ async function quranGoToPage(page, options) {
     if (myToken !== quranNavToken) return; // the user already moved to another page
     quranCurrentPageContextLabel = computeQuranPageContextLabel(data);
     quranPageContent.innerHTML = buildMushafPageHtml(data);
+    applyQuranPlayingHighlight();
   } catch (e) {
     if (myToken !== quranNavToken) return;
     quranCurrentPageContextLabel = "";
@@ -941,10 +948,16 @@ function quranStopAudio() {
   updateQuranAudioButtons();
 }
 
+// An ayah's 🔊 shows ⏸️ while that single ayah is what the player is
+// reciting (tapping an ayah plays it through the same player as a page
+// or range, so it gets pause / stop / 🔁 repeat too).
 function updateQuranAudioButtons() {
+  const singleKey = (typeof quranRangeQueue !== "undefined" && quranRangeQueue.length === 1) ? quranRangePlayingKey : null;
+  const pageBtn = document.getElementById("quranPageListenBtn");
+  if (pageBtn) pageBtn.classList.toggle("playing", typeof quranRangeQueue !== "undefined" && quranRangeQueue.length > 1 && quranRangeIsCurrentPage);
   quranPageContent.querySelectorAll(".quran-ayah-audio-btn").forEach((btn) => {
     const key = `${btn.dataset.surah}:${btn.dataset.ayah}`;
-    const isPlaying = key === quranPlayingAyahKey;
+    const isPlaying = key === quranPlayingAyahKey || key === singleKey;
     btn.textContent = isPlaying ? "⏸️" : "🔊";
     btn.classList.toggle("playing", isPlaying);
   });
@@ -957,22 +970,17 @@ quranPageContent.addEventListener("click", async (e) => {
   if (!btn || btn.disabled) return;
   const key = `${btn.dataset.surah}:${btn.dataset.ayah}`;
 
-  if (quranPlayingAyahKey === key) {
-    quranStopAudio();
+  // Tapping the ayah that's playing stops it.
+  if (quranRangeQueue.length === 1 && quranRangePlayingKey === key) {
+    quranRangeStop();
     return;
   }
-  quranStopAudio();
+  const surah = parseInt(btn.dataset.surah, 10);
+  const ayah = parseInt(btn.dataset.ayah, 10);
+  if (!surah || !ayah) return;
   btn.disabled = true;
   try {
-    const url = await fetchQuranAyahAudioUrl(key, quranSelectedReciter);
-    if (!url) throw new Error("no audio url");
-    quranAudioEl = new Audio(url);
-    quranPlayingAyahKey = key;
-    quranAudioEl.addEventListener("ended", quranStopAudio);
-    await quranAudioEl.play();
-    updateQuranAudioButtons();
-  } catch (err) {
-    quranStopAudio();
+    await quranStartRangePlayback(surah, ayah, surah, ayah, 1, 1);
   } finally {
     btn.disabled = false;
   }
@@ -1029,6 +1037,15 @@ let quranRangeIndex = -1;
 let quranRangeFailures = 0; // consecutive failed ayahs — stops the loop when offline
 let quranRangeAudioEl = null;
 let quranRangePaused = false;
+// Repetition: each ayah plays quranRepeatEach times in a row; the whole
+// range plays quranRepeatRange times (0 = endlessly, until ⏹️).
+let quranRepeatEach = 1;
+let quranRepeatRange = 1;
+let quranRangeAyahRep = 1; // which repetition of the current ayah is playing
+let quranRangeLoop = 1;    // which pass over the whole range
+let quranRangePlayingKey = null; // "surah:ayah" highlighted on the page
+let quranRangeIsCurrentPage = false; // playing came from 🎧 (this page)
+const QURAN_REPEAT_KEY = "qf_quran_repeat";
 
 // Sliding preload window — while ayah N plays, ayahs N+1..N+3 are
 // already downloading in the background (Audio elements created and
@@ -1055,39 +1072,132 @@ function quranRangeClearPreload() {
 // Called right after starting playback of `fromIndex` — tops up the
 // preload window to fromIndex+1..fromIndex+AHEAD, and drops anything
 // that's now behind us (already played, or skipped) so the cache
-// doesn't grow across a long range.
+// doesn't grow across a long range. When the range will play again,
+// the window wraps around to its first ayahs, so the next pass starts
+// without a gap too.
 function quranRangeEnsurePreload(fromIndex) {
+  const len = quranRangeQueue.length;
+  const wraps = quranRepeatRange === 0 || quranRangeLoop < quranRepeatRange;
+  const wanted = new Set();
+  for (let offset = 1; offset <= QURAN_RANGE_PRELOAD_AHEAD; offset++) {
+    let idx = fromIndex + offset;
+    if (idx >= len) {
+      if (!wraps) break;
+      idx -= len;
+    }
+    if (idx !== fromIndex) wanted.add(idx);
+  }
   for (const [idx, audioEl] of quranRangePreloadCache) {
-    if (idx <= fromIndex) {
+    if (!wanted.has(idx)) {
       audioEl.pause();
       audioEl.src = "";
       quranRangePreloadCache.delete(idx);
     }
   }
-  for (let offset = 1; offset <= QURAN_RANGE_PRELOAD_AHEAD; offset++) {
-    const idx = fromIndex + offset;
-    if (idx >= quranRangeQueue.length || quranRangePreloadCache.has(idx)) continue;
+  wanted.forEach((idx) => {
+    if (quranRangePreloadCache.has(idx)) return;
     const url = quranRangeUrlForIndex(idx);
-    if (!url) continue;
+    if (!url) return;
     const audioEl = new Audio(url);
     audioEl.preload = "auto";
     audioEl.load();
     quranRangePreloadCache.set(idx, audioEl);
+  });
+}
+
+// ---- which page each ayah is on (for following along in the reader) ----
+let quranAyahPageMapPromise = null;
+function getQuranAyahPageMap() {
+  if (!quranAyahPageMapPromise) {
+    quranAyahPageMapPromise = fetchLocalAyahIndex() // reused from app.js
+      .then((list) => new Map(list.map((a) => [`${a.surah}:${a.ayah}`, { page: a.page, endPage: a.endPage || a.page }])))
+      .catch((e) => { quranAyahPageMapPromise = null; return new Map(); });
   }
+  return quranAyahPageMapPromise;
+}
+
+function applyQuranPlayingHighlight() {
+  updateQuranAudioButtons();
+  quranPageContent.querySelectorAll(".quran-ayah-playing").forEach((el) => el.classList.remove("quran-ayah-playing"));
+  if (!quranRangePlayingKey) return;
+  quranPageContent.querySelectorAll(`.quran-word[data-k="${quranRangePlayingKey}"]`)
+    .forEach((el) => el.classList.add("quran-ayah-playing"));
+}
+
+// Turns the reader's page so the recited ayah stays in view — but only
+// while the person is "following along" (they're on the page of the
+// previous ayah, or it's the first ayah). If they browsed to another
+// page meanwhile, the recitation doesn't yank them back.
+async function quranRangeFollow(step, previousStep) {
+  const pages = await getQuranAyahPageMap();
+  const here = pages.get(`${step.surah}:${step.ayah}`);
+  if (!here) return;
+  let following = !previousStep;
+  if (previousStep) {
+    const prev = pages.get(`${previousStep.surah}:${previousStep.ayah}`);
+    following = !!prev && currentQuranPage >= prev.page && currentQuranPage <= prev.endPage;
+  }
+  const alreadyVisible = currentQuranPage >= here.page && currentQuranPage <= here.endPage;
+  if (following && !alreadyVisible) await quranGoToPage(here.page);
+}
+
+function quranRangeStatusText(step, surahName) {
+  const shortName = String(surahName).replace(/^سُورَةُ\s*/, ""); // "سُورَةُ ٱلْبَقَرَةِ" → "ٱلْبَقَرَةِ"
+  let text = `🎧 ${shortName} ${toArabicDigits(step.ayah)}`;
+  if (quranRangeQueue.length > 1) {
+    text += ` (${toArabicDigits(quranRangeIndex + 1)}/${toArabicDigits(quranRangeQueue.length)})`;
+  }
+  if (quranRepeatEach > 1) text += ` · 🔁 ${toArabicDigits(quranRangeAyahRep)}/${toArabicDigits(quranRepeatEach)}`;
+  if (quranRepeatRange !== 1) {
+    // one ayah: "تكرار ٢/٥"; a page or range: "دورة ٢/٥" (a full pass)
+    const word = quranRangeQueue.length === 1 ? "تكرار" : "دورة";
+    text += quranRepeatRange === 0
+      ? ` · ${word} ${toArabicDigits(quranRangeLoop)}`
+      : ` · ${word} ${toArabicDigits(quranRangeLoop)}/${toArabicDigits(quranRepeatRange)}`;
+  }
+  return text;
+}
+
+// What happens when the current ayah finishes: the same ayah again (its
+// repetitions), then the next ayah, then — at the end of the range — the
+// next pass over the range, or done.
+function quranRangeOnAyahEnded() {
+  if (quranRangePaused || !quranRangeQueue.length) return;
+  if (quranRangeAyahRep < quranRepeatEach && quranRangeAudioEl) {
+    quranRangeAyahRep += 1;
+    const step = quranRangeQueue[quranRangeIndex];
+    getQuranCatalogMap().then((m) => {
+      quranListenNowPlaying.textContent = quranRangeStatusText(step, m.get(step.surah)?.name || step.surah);
+    });
+    quranRangeAudioEl.currentTime = 0;
+    quranRangeAudioEl.play().catch(() => quranPlayNextInRange());
+    return;
+  }
+  quranPlayNextInRange();
 }
 
 async function quranPlayNextInRange() {
+  const previousStep = quranRangeQueue[quranRangeIndex] || null;
   quranRangeIndex += 1;
+  quranRangeAyahRep = 1;
   if (quranRangeIndex >= quranRangeQueue.length) {
-    quranListenNowPlaying.textContent = "✅ انتهى الاستماع للمقطع المحدد.";
-    return;
+    const again = quranRepeatRange === 0 || quranRangeLoop < quranRepeatRange;
+    if (!again || !quranRangeQueue.length) {
+      quranRangeFinished();
+      return;
+    }
+    quranRangeLoop += 1;
+    quranRangeIndex = 0;
   }
   const step = quranRangeQueue[quranRangeIndex];
   const catalogMap = await getQuranCatalogMap();
+  if (!quranRangeQueue.length) return; // stopped meanwhile
   const surahInfo = catalogMap.get(step.surah);
-  quranListenNowPlaying.textContent =
-    `🎧 ${surahInfo ? surahInfo.name : step.surah} — آية ${toArabicDigits(step.ayah)} ` +
-    `(${toArabicDigits(quranRangeIndex + 1)}/${toArabicDigits(quranRangeQueue.length)})`;
+  quranListenNowPlaying.textContent = quranRangeStatusText(step, surahInfo ? surahInfo.name : step.surah);
+
+  quranRangePlayingKey = `${step.surah}:${step.ayah}`;
+  await quranRangeFollow(step, previousStep);
+  applyQuranPlayingHighlight();
 
   try {
     if (quranRangeAudioEl) { quranRangeAudioEl.pause(); quranRangeAudioEl = null; }
@@ -1102,11 +1212,10 @@ async function quranPlayNextInRange() {
       if (!url) throw new Error("no audio url");
       audioEl = new Audio(url);
     }
+    if (!quranRangeQueue.length) return; // stopped while turning the page
 
     quranRangeAudioEl = audioEl;
-    quranRangeAudioEl.addEventListener("ended", () => {
-      if (!quranRangePaused) quranPlayNextInRange();
-    });
+    quranRangeAudioEl.addEventListener("ended", quranRangeOnAyahEnded);
     await quranRangeAudioEl.play();
     quranRangeFailures = 0;
 
@@ -1115,8 +1224,11 @@ async function quranPlayNextInRange() {
     if (!quranRangeQueue.length) return; // stopped meanwhile
     quranRangeFailures += 1;
     if (quranRangeFailures >= 3) {
-      quranListenNowPlaying.textContent = "تعذّر تشغيل التلاوة. تحقق من اتصالك بالإنترنت ثم حاول مرة أخرى.";
+      quranListenNowPlaying.textContent = "تعذّر تشغيل التلاوة. تحقق من اتصالك بالإنترنت.";
       quranRangeFailures = 0;
+      quranRangePaused = true;
+      quranListenPauseBtn.textContent = "▶️";
+      quranListenPauseBtn.setAttribute("aria-label", "متابعة");
       return;
     }
     quranListenNowPlaying.textContent = "تعذّر تشغيل أحد المقاطع، جارٍ المتابعة...";
@@ -1124,17 +1236,169 @@ async function quranPlayNextInRange() {
   }
 }
 
-function quranRangeStop() {
+// ---- 🔁 on the mini player: repeat whatever is playing ----
+// Cycles how many times the whole queue plays — for a tapped ayah that
+// repeats the ayah, for 🎧 the page, for the dialog's range the range.
+// Changes apply immediately, mid-recitation.
+const QURAN_REPEAT_STEPS = [1, 2, 3, 5, 10, 0]; // 0 = endlessly, until ⏹️
+const quranListenRepeatBtn = document.getElementById("quranListenRepeatBtn");
+
+function updateQuranRepeatButton() {
+  if (!quranListenRepeatBtn) return;
+  const n = quranRepeatRange;
+  quranListenRepeatBtn.classList.toggle("on", n !== 1);
+  quranListenRepeatBtn.textContent = n === 1 ? "🔁" : (n === 0 ? "🔁 ∞" : `🔁 ${toArabicDigits(n)}`);
+  quranListenRepeatBtn.setAttribute("aria-label", n === 1 ? "التكرار: مرة واحدة"
+    : n === 0 ? "التكرار: بلا توقف" : `التكرار: ${toArabicDigits(n)} مرات`);
+}
+
+if (quranListenRepeatBtn) {
+  quranListenRepeatBtn.addEventListener("click", () => {
+    const i = QURAN_REPEAT_STEPS.indexOf(quranRepeatRange);
+    quranRepeatRange = QURAN_REPEAT_STEPS[(i + 1) % QURAN_REPEAT_STEPS.length];
+    // already past the new count (e.g. on pass 3, switched to ×2): finish this pass
+    if (quranRepeatRange !== 0 && quranRangeLoop > quranRepeatRange) quranRangeLoop = quranRepeatRange;
+    updateQuranRepeatButton();
+    const step = quranRangeQueue[quranRangeIndex];
+    if (step) {
+      getQuranCatalogMap().then((m) => {
+        if (quranRangeQueue[quranRangeIndex] === step) {
+          quranListenNowPlaying.textContent = quranRangeStatusText(step, m.get(step.surah)?.name || step.surah);
+        }
+      });
+      quranRangeEnsurePreload(quranRangeIndex); // the next pass may now wrap around
+    }
+  });
+}
+
+function quranShowMiniPlayer(show) {
+  quranListenPlayer.style.display = show ? "flex" : "none";
+  document.body.classList.toggle("quran-player-on", !!show); // other tabs leave room for it
+  if (show) {
+    const nav = document.getElementById("bottomNav");
+    quranListenPlayer.style.bottom = ((nav ? nav.offsetHeight : 64) + 8) + "px";
+  }
+  resizeQuranShell(); // the reader makes room for the player (or takes it back)
+}
+
+function quranRangeFinished() {
+  quranRangeStop({ keepPlayer: true });
+  quranListenNowPlaying.textContent = "✅ انتهى الاستماع.";
+  setTimeout(() => {
+    if (!quranRangeQueue.length && quranListenNowPlaying.textContent === "✅ انتهى الاستماع.") quranShowMiniPlayer(false);
+  }, 2500);
+}
+
+function quranRangeStop(options) {
   if (quranRangeAudioEl) { quranRangeAudioEl.pause(); quranRangeAudioEl.currentTime = 0; quranRangeAudioEl = null; }
   quranRangeClearPreload();
   quranRangeQueue = [];
   quranRangeIndex = -1;
   quranRangeFailures = 0;
   quranRangePaused = false;
-  quranListenPlayer.style.display = "none";
-  quranListenNowPlaying.textContent = "";
-  quranListenPauseBtn.textContent = "⏸️ إيقاف مؤقت";
+  quranRangeAyahRep = 1;
+  quranRangeLoop = 1;
+  quranRangePlayingKey = null;
+  quranRangeIsCurrentPage = false;
+  applyQuranPlayingHighlight();
+  quranListenPauseBtn.textContent = "⏸️";
+  quranListenPauseBtn.setAttribute("aria-label", "إيقاف مؤقت");
+  if (!(options && options.keepPlayer)) {
+    quranListenNowPlaying.textContent = "";
+    quranShowMiniPlayer(false);
+  }
 }
+
+// Starts playing fromSurah:fromAyah … toSurah:toAyah with the chosen
+// repetition. Shared by the dialog and the ⋮ → «استماع لهذه الصفحة» item.
+async function quranStartRangePlayback(fromSurah, fromAyah, toSurah, toAyah, repeatEach, repeatRange, opts) {
+  quranStopAudio();
+  quranRangeStop();
+  quranRangeIsCurrentPage = !!(opts && opts.isPage);
+  quranRepeatEach = Math.max(1, repeatEach || 1);
+  quranRepeatRange = Math.max(0, repeatRange == null ? 1 : repeatRange);
+  quranRangeQueue = await buildQuranRangeQueue(fromSurah, fromAyah, toSurah, toAyah);
+  quranRangeIndex = -1;
+  quranRangeFailures = 0;
+  quranRangePaused = false;
+  quranRangeLoop = 1;
+  updateQuranRepeatButton();
+  quranListenNowPlaying.textContent = "⏳ جارٍ التحميل...";
+  quranShowMiniPlayer(true);
+  quranPlayNextInRange();
+}
+
+// First and last ayah printed on a Mushaf page (an ayah that started on
+// the previous page counts — its end is on this one).
+async function quranPageAyahBounds(page) {
+  const data = await fetchMushafPageLayout(page);
+  const words = (data?.lines || [])
+    .filter((l) => l.type === "text")
+    .flatMap((l) => l.words || [])
+    .map((w) => (w.location || "").split(":").map((n) => parseInt(n, 10)))
+    .filter(([sNum, aNum]) => sNum && aNum);
+  if (!words.length) return null;
+  const [fs, fa] = words[0];
+  const [ls, la] = words[words.length - 1];
+  return { fromSurah: fs, fromAyah: fa, toSurah: ls, toAyah: la };
+}
+
+async function quranListenToCurrentPage() {
+  try {
+    const b = await quranPageAyahBounds(currentQuranPage);
+    if (!b) throw new Error("no ayahs on page");
+    await quranStartRangePlayback(b.fromSurah, b.fromAyah, b.toSurah, b.toAyah, 1, 1, { isPage: true });
+  } catch (e) {
+    alert("تعذّر تحديد آيات هذه الصفحة.");
+  }
+}
+
+// ---- the dialog ----
+function loadQuranRepeatPrefs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(QURAN_REPEAT_KEY) || "null");
+    if (saved) {
+      if (saved.each != null) quranRepeatEachSelect.value = String(saved.each);
+      if (saved.range != null) quranRepeatRangeSelect.value = String(saved.range);
+    }
+  } catch (e) { /* ignore */ }
+}
+function saveQuranRepeatPrefs(each, range) {
+  try { localStorage.setItem(QURAN_REPEAT_KEY, JSON.stringify({ each, range })); } catch (e) { /* ignore */ }
+}
+const quranRepeatEachSelect = document.getElementById("quranRepeatEach");
+const quranRepeatRangeSelect = document.getElementById("quranRepeatRange");
+loadQuranRepeatPrefs();
+
+async function quranFillListenRange(fromSurah, fromAyah, toSurah, toAyah) {
+  if (!quranListenSurahsLoaded) {
+    quranListenSurahsLoaded = await populateQuranListenSurahSelects();
+  }
+  quranListenFromSurah.value = String(fromSurah);
+  quranListenToSurah.value = String(toSurah);
+  quranListenFromAyah.value = String(fromAyah);
+  quranListenToAyah.value = String(toAyah);
+  await syncListenAyahMax(quranListenFromSurah, quranListenFromAyah);
+  await syncListenAyahMax(quranListenToSurah, quranListenToAyah);
+}
+
+document.querySelectorAll("[data-listen-preset]").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    quranListenError.textContent = "";
+    try {
+      if (btn.dataset.listenPreset === "page") {
+        const b = await quranPageAyahBounds(currentQuranPage);
+        if (b) await quranFillListenRange(b.fromSurah, b.fromAyah, b.toSurah, b.toAyah);
+      } else {
+        const surahNum = currentPageSurahNumber();
+        const info = surahNum ? (await getQuranCatalogMap()).get(surahNum) : null;
+        if (info) await quranFillListenRange(surahNum, 1, surahNum, info.numberOfAyahs);
+      }
+    } catch (e) {
+      quranListenError.textContent = "تعذّر تحديد الآيات.";
+    }
+  });
+});
 
 quranListenStartBtn.addEventListener("click", async () => {
   quranListenError.textContent = "";
@@ -1164,30 +1428,49 @@ quranListenStartBtn.addEventListener("click", async () => {
     return;
   }
 
-  quranStopAudio();
-  quranRangeQueue = await buildQuranRangeQueue(fromSurah, fromAyah, toSurah, toAyah);
-  quranRangeIndex = -1;
-  quranRangeFailures = 0;
-  quranRangePaused = false;
-  quranRangeClearPreload();
-  quranListenPlayer.style.display = "block";
-  quranPlayNextInRange();
+  const each = parseInt(quranRepeatEachSelect.value, 10) || 1;
+  const range = parseInt(quranRepeatRangeSelect.value, 10);
+  saveQuranRepeatPrefs(each, Number.isFinite(range) ? range : 1);
+  closeQuranModal("quranListenModal"); // the mini player takes over — read along on the page
+  await quranStartRangePlayback(fromSurah, fromAyah, toSurah, toAyah, each, Number.isFinite(range) ? range : 1);
 });
 
 quranListenPauseBtn.addEventListener("click", () => {
-  if (!quranRangeAudioEl) return;
+  if (!quranRangeQueue.length) return;
   if (quranRangePaused) {
     quranRangePaused = false;
-    quranRangeAudioEl.play();
-    quranListenPauseBtn.textContent = "⏸️ إيقاف مؤقت";
+    quranListenPauseBtn.textContent = "⏸️";
+    quranListenPauseBtn.setAttribute("aria-label", "إيقاف مؤقت");
+    if (quranRangeAudioEl) {
+      quranRangeAudioEl.play().catch(() => quranPlayNextInRange());
+    } else {
+      quranRangeIndex -= 1; // playback had stopped on an error — retry the same ayah
+      quranPlayNextInRange();
+    }
   } else {
     quranRangePaused = true;
-    quranRangeAudioEl.pause();
-    quranListenPauseBtn.textContent = "▶️ متابعة";
+    if (quranRangeAudioEl) quranRangeAudioEl.pause();
+    quranListenPauseBtn.textContent = "▶️";
+    quranListenPauseBtn.setAttribute("aria-label", "متابعة");
   }
 });
 
-quranListenStopBtn.addEventListener("click", quranRangeStop);
+quranListenStopBtn.addEventListener("click", () => quranRangeStop());
+
+// 🎧 next to the page number: recite this page (tap again while this
+// page is playing to stop).
+document.getElementById("quranPageListenBtn").addEventListener("click", () => {
+  if (quranRangeQueue.length > 1 && quranRangeIsCurrentPage) { quranRangeStop(); return; }
+  quranListenToCurrentPage();
+});
+
+document.querySelectorAll("[data-listen-action='page']").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    quranMenuDropdown.style.display = "none";
+    quranMenuBtn.setAttribute("aria-expanded", "false");
+    quranListenToCurrentPage();
+  });
+});
 
 // Keeps each "الآية" number input's max in step with its surah, so the
 // browser's own spinner can't go past the last ayah.
@@ -1215,9 +1498,14 @@ function openQuranModal(id) {
     renderQuranBookmarksList();
   } else if (id === "quranReciterModal") {
     renderQuranReciterList();
-  } else if (id === "quranListenModal" && !quranListenSurahsLoaded) {
-    quranListenSurahsLoaded = true;
-    populateQuranListenSurahSelects().then((ok) => { if (!ok) quranListenSurahsLoaded = false; });
+  } else if (id === "quranListenModal") {
+    quranListenError.textContent = "";
+    if (!quranListenSurahsLoaded) {
+      // first opening: start from the page that's open in the reader
+      quranPageAyahBounds(currentQuranPage)
+        .then((b) => b && quranFillListenRange(b.fromSurah, b.fromAyah, b.toSurah, b.toAyah))
+        .catch(() => {});
+    }
   }
 }
 
@@ -1225,7 +1513,6 @@ function closeQuranModal(id) {
   const el = document.getElementById(id);
   if (!el) return;
   el.style.display = "none";
-  if (id === "quranListenModal") quranRangeStop();
 }
 
 QURAN_MODAL_IDS.forEach((id) => {

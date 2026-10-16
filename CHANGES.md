@@ -1,3 +1,27 @@
+# 📖 Reader, listening, sign-up & duels — 2026-10-16
+
+## To do on your side (once)
+1. Supabase → SQL Editor → paste the whole `supabase-schema.sql` → **Run** (safe to re-run, keeps data).
+2. Redeploy the duel function: `supabase functions deploy generate-duel-questions`.
+Until both are done, duels still work but without the pauses and the result card.
+
+## Mushaf reader
+- **Taller page:** the frame around the page and the page-turn row are slimmer on phones — about 40px more height for the Mushaf text on a typical phone.
+- **🎧 Listen to this page — one tap,** right next to the page number (also still in ⋮). Tap again to stop.
+- **🔁 Repeat** on the recitation player: each tap cycles ×1 → ×2 → ×3 → ×5 → ×10 → ∞. Tap an ayah's 🔊 then 🔁 to repeat that verse; with 🎧 it repeats the page; with ⋮ → «استماع وتكرار مقطع» it repeats your chosen set of verses (that dialog also repeats each ayah separately). Tapping an ayah now also opens the player (pause / stop / repeat) and highlights the verse.
+
+## Sign-up
+- After creating an account: a clear 3-step notice — open the «تأكيد التسجيل» email sent to *your address*, tap the link (in the app: it opens in the phone's browser, that's normal), come back and log in — plus a spam-folder hint and a **📨 resend link** button (60s cooldown).
+- The login dialog remembers an unconfirmed sign-up and keeps reminding (with resend) until the first successful login; logging in before confirming explains exactly what to do.
+
+## Online duels (⚔️ مباشر)
+- **Invites now always arrive.** They relied only on Supabase Realtime; when that didn't deliver (Realtime not enabled for the project, a phone that slept, a flaky network) the challenge never appeared and the challenger waited forever. The app now also checks the server every few seconds (only while the screen is on, and immediately when it comes back on) — invites, acceptance, and the duel itself. Realtime problems are logged in the console.
+- **Result card between questions, for both players:** over the question card — "🎉 أنت أخذت النقطة!" / "⚡ <name> أخذ النقطة" / "⏱️ لم يأخذ أحد النقطة", the right answer, the score and a countdown (3s). The right answer is also marked on the card.
+- **Calmer type changes:** when the next question is a different type, a 5-second intro shows its name and what it asks (6s before the first question).
+- The round status ("wrong — waiting for the opponent"…) moved above the card, so it's always in view.
+- The server now hides each question's text/choices until its start moment (both players get it at the same time — no peeking during the pauses), and only reveals who took the point and the right answer once a question is over.
+- Tested with two players in two browsers against the real schema in a local database, **with Realtime switched off**: invite arrived in ~3s, all 9 questions, result card ~3s each, 5s intros at type changes, matching final scores on both sides.
+
 # 📱 App fixes + website icon — 2026-10-16
 
 - **Android: big gaps above the top bar and under the bottom bar, and the page wouldn't scroll to the end.** The page was being kept clear of the status bar and navigation bar twice — once by Android and once by the page's own "safe area" spacing, which some phones report wrongly. Now the page always sits exactly between the two bars on Android and the extra spacing is 0. A likely cause of the scrolling problem was removed too: an app-only rule that stopped page "bounce" on Android could also block the page from scrolling on some WebView versions. That rule now applies only to iPhone, where it's safe.

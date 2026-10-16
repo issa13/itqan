@@ -1377,20 +1377,34 @@ alter table public.duel_questions enable row level security;
 -- see duel_questions_public and the Edge Function.
 
 create or replace view public.duel_questions_public as
-select dq.id, dq.duel_id, dq.question_index, dq.question_type, dq.page,
-       dq.q_text, dq.q_ayah_number, dq.is_audio_only, dq.choices
+select dq.id, dq.duel_id, dq.question_index, dq.question_type,
+       -- The question's CONTENT stays hidden until it's revealed (1s early
+       -- to absorb clock drift) — with the longer pauses between questions
+       -- a modified client could otherwise read the next question during
+       -- the pause. Its type is visible straight away (for the intro).
+       case when v.shown then dq.page end as page,
+       case when v.shown then dq.q_text end as q_text,
+       case when v.shown then dq.q_ayah_number end as q_ayah_number,
+       dq.is_audio_only,
+       case when v.shown then dq.choices end as choices,
+       -- Once a question is over: the right answer and who took the
+       -- point, for the result card both players see between questions.
+       case when v.done then dq.correct_index end as correct_index,
+       case when v.done then dq.winner_user_id end as winner_user_id,
+       v.shown as content_ready
 from public.duel_questions dq
-where exists (
-  select 1 from public.duels d
-  where d.id = dq.duel_id
-    and (d.created_by = auth.uid() or d.opponent_id = auth.uid())
-    -- only questions already reached: otherwise a player could read every
-    -- upcoming question (and its choices) at the start and prepare answers
-    and (d.status = 'finished' or dq.question_index <= d.current_question_index)
-);
--- correct_index and winner_user_id are deliberately excluded above —
--- a view only ever returns the columns in its own SELECT list, so
--- this holds regardless of RLS mode.
+join public.duels d on d.id = dq.duel_id
+cross join lateral (
+  select
+    (d.status = 'finished'
+      or dq.question_index < d.current_question_index
+      or (dq.question_index = d.current_question_index
+          and (d.current_question_revealed_at is null
+               or clock_timestamp() >= d.current_question_revealed_at - interval '1 second'))) as shown,
+    (d.status = 'finished' or dq.question_index < d.current_question_index) as done
+) v
+where (d.created_by = auth.uid() or d.opponent_id = auth.uid())
+  and (d.status = 'finished' or dq.question_index <= d.current_question_index);
 
 grant select on public.duel_questions_public to authenticated;
 
@@ -1969,18 +1983,18 @@ begin
   v_is_last := (p_question_index + 1 >= v_duel.total_questions);
 
   if not v_is_last then
-    -- A short synchronized "get ready" pre-roll — but only when the
-    -- next question's type actually differs from the current one, so
-    -- both players see a beat to notice the type change (same spirit
-    -- as offline mode's type-intro screen) without slowing down a
-    -- run of same-type questions at all. Both clients compute this
-    -- identically off the same server timestamp, so no "ready" combo
-    -- API is needed.
+    -- A synchronized pause before the next question, computed by both
+    -- clients off this same server timestamp (no "ready" handshake):
+    --   * 3s after EVERY question — both players see who took the point
+    --     and the right answer (the result card in app.js);
+    --   * +5s more when the next question's TYPE changes — time to read
+    --     the new type calmly (the type-intro screen).
+    -- Keep in step with DUEL_RESULT_PAUSE_MS / DUEL_TYPE_INTRO_MS in app.js.
     select question_type into v_prev_type from public.duel_questions
       where duel_id = p_duel_id and question_index = p_question_index;
     select question_type into v_next_type from public.duel_questions
       where duel_id = p_duel_id and question_index = p_question_index + 1;
-    v_delay_seconds := case when v_next_type is distinct from v_prev_type then 3 else 0 end;
+    v_delay_seconds := 3 + case when v_next_type is distinct from v_prev_type then 5 else 0 end;
 
     update public.duels
     set current_question_index = p_question_index + 1,

@@ -128,6 +128,16 @@ async function requestPasswordReset(email) {
   if (error) throw error;
 }
 
+// Sends the "confirm your email" message again (sign-up confirmation).
+async function resendSignupEmail(email) {
+  const { error } = await withTimeout(sb.auth.resend({
+    type: "signup",
+    email,
+    options: { emailRedirectTo: authRedirectUrl() },
+  }), 20000, "network timeout");
+  if (error) throw error;
+}
+
 async function updatePassword(newPassword) {
   const { error } = await withTimeout(sb.auth.updateUser({ password: newPassword }), 20000, "network timeout");
   if (error) throw error;
@@ -915,7 +925,18 @@ function subscribeToIncomingDuelInvites(onInvite) {
       { event: "INSERT", schema: "public", table: "duels", filter: `opponent_id=eq.${currentUser.id}` },
       (payload) => onInvite(payload.new)
     )
-    .subscribe();
+    .subscribe((status, err) => logRealtimeStatus("duel invites", status, err));
+}
+
+// Realtime problems (Realtime not enabled for the project, `duels` not in
+// the supabase_realtime publication, a phone that slept…) used to make
+// invites and duels silently stall. The app now ALSO polls (see
+// startIncomingInvitePoll() in auth-ui.js and beginDuelStateWatch() in
+// app.js), so this is only logged — useful when debugging in the console.
+function logRealtimeStatus(what, status, err) {
+  if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+    console.warn(`realtime (${what}): ${status} — falling back to polling`, err || "");
+  }
 }
 
 function unsubscribeFromIncomingDuelInvites() {
@@ -939,7 +960,7 @@ function subscribeToDuelState(duelId, onChange) {
       { event: "UPDATE", schema: "public", table: "duels", filter: `id=eq.${duelId}` },
       (payload) => onChange(payload.new)
     )
-    .subscribe();
+    .subscribe((status, err) => logRealtimeStatus("duel state", status, err));
   return channel;
 }
 

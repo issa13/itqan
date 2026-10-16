@@ -585,10 +585,12 @@ Deno.serve(async (req: Request) => {
         status: "active",
         total_questions: rows.length,
         current_question_index: 0,
-        // Same 3s "get ready" pre-roll advance_duel_question() gives
-        // every type change — the first question is always a type
-        // change from "nothing yet".
-        current_question_revealed_at: new Date(Date.now() + 3000).toISOString(),
+        // A "get ready" pre-roll before the first question — the first
+        // question is always a type change from "nothing yet", so both
+        // players get time to read its type (see advance_duel_question()
+        // for the pauses between later questions; keep in step with
+        // DUEL_TYPE_INTRO_MS in app.js).
+        current_question_revealed_at: new Date(Date.now() + 6000).toISOString(),
         started_at: duel.started_at || new Date().toISOString(),
       })
       .eq("id", duelId)
