@@ -361,6 +361,15 @@ async function fetchMySessions() {
   return data;
 }
 
+// Deletes several sessions at once; returns how many were really deleted
+// (row-level security silently skips anything that isn't yours).
+async function deleteSessions(ids) {
+  if (!sb || !currentUser || !ids.length) return 0;
+  const { data, error } = await sb.from("sessions").delete().in("id", ids).select("id");
+  if (error) { console.error("deleteSessions error", error); return -1; }
+  return (data || []).length;
+}
+
 async function deleteSession(sessionId) {
   if (!sb || !currentUser) return;
   const { error } = await sb.from("sessions").delete().eq("id", sessionId);

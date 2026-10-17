@@ -1,3 +1,13 @@
+# 🔔 Notifications, sessions & layout fixes — 2026-10-17 (2)
+
+- **Offline notice inside the challenge card** no longer sticks out of the card, and offline notices now have a solid background — the background pattern no longer shows through them.
+- **👤 Sessions:** now the first section. «☑️ تحديد» lets you tick several sessions (tap a row or its box) or «تحديد الكل», then «🗑 حذف المحدد (n)» deletes them in one go (after confirming). The ذاتي session in progress can't be ticked.
+- **👤 Sections:** opening one closes the others.
+- **🔔 Challenge notifications:** on the first opening the app asks (in Arabic, explaining why) whether to notify you about challenges, then shows the system permission dialog. When someone challenges you, a system notification appears (tapping it opens ⚔️ تحديات), alongside the in-app banner — once per challenge. Changeable later in 👤 → ⚙️ الإعدادات والحساب → 🔔.
+  - App: new `@capacitor/local-notifications` plugin (run `npm install` in `mobile/`), a white star-and-book notification icon, and the plugin's exact-alarm permission removed (not needed; Google Play restricts it).
+  - Website: the browser's notifications (while the site is open, also in a background tab).
+  - Limitation: notifications come from the app itself, so they arrive while it's open or recently in the background. Reaching a fully closed app needs a push service (Firebase / Apple) plus a server trigger — possible as a next step.
+
 # 📴 Real offline mode, floating player & new look — 2026-10-17
 
 ## Offline — the app now really knows, and tells the user

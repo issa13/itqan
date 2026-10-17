@@ -759,6 +759,8 @@ function renderDuelInviteBanner(invite) {
 
   duelInviteBanner.style.display = "flex";
   shownDuelInviteId = invite.id;
+  // …and a system notification, seen even when the app is in the background
+  if (typeof ItqanNotify !== "undefined") ItqanNotify.challenge(invite);
 }
 
 // Normalizes a raw realtime INSERT payload into the same shape
@@ -793,8 +795,9 @@ const INVITE_POLL_MS = 5000;
 let invitePollTimer = null;
 
 async function pollIncomingDuelInvitesOnce() {
-  if (!currentUser || document.visibilityState === "hidden") return;
+  if (!currentUser) return;
   if (typeof fetchMyIncomingDuelInvites !== "function") return;
+  if (typeof Net !== "undefined" && !Net.isOnline()) return;
   if (activeDuelIdSafe()) return; // busy in a duel already
   const invites = await fetchMyIncomingDuelInvites();
   const next = (invites || []).find((i) =>
@@ -816,6 +819,43 @@ function stopIncomingInvitePoll() {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && invitePollTimer) pollIncomingDuelInvitesOnce();
 });
+
+// -------- challenge notifications (notify.js) --------
+const notifyAskModal = document.getElementById("notifyAskModal");
+const notifyStateText = document.getElementById("notifyStateText");
+const notifyEnableBtn = document.getElementById("notifyEnableBtn");
+
+async function renderNotifySetting() {
+  if (typeof ItqanNotify === "undefined" || !ItqanNotify.supported()) {
+    document.getElementById("notifySettingsRow").style.display = "none";
+    return;
+  }
+  const st = await ItqanNotify.state();
+  notifyStateText.textContent = st === "granted" ? "مفعّلة ✓" : st === "denied" ? "مرفوضة — فعّلها من إعدادات الهاتف/المتصفح" : "غير مفعّلة";
+  notifyEnableBtn.style.display = st === "granted" || st === "denied" ? "none" : "";
+}
+async function enableNotifications() {
+  hideModal(notifyAskModal);
+  const result = await ItqanNotify.request();
+  showInfoToast(result === "granted" ? "🔔 ستصلك الإشعارات عندما يتحداك أحد." : "لم تُفعَّل الإشعارات. يمكنك تفعيلها من إعدادات الهاتف.");
+  renderNotifySetting();
+}
+if (typeof ItqanNotify !== "undefined") {
+  document.getElementById("notifyAskYesBtn").addEventListener("click", enableNotifications);
+  notifyEnableBtn.addEventListener("click", enableNotifications);
+  const later = () => { ItqanNotify.markAsked(); hideModal(notifyAskModal); renderNotifySetting(); };
+  document.getElementById("notifyAskNoBtn").addEventListener("click", later);
+  document.getElementById("notifyAskCloseBtn").addEventListener("click", later);
+  renderNotifySetting();
+  // Asked once, on the first opening of the app — a moment after it has
+  // loaded, and not on top of another dialog.
+  setTimeout(async () => {
+    if (!ItqanNotify.supported() || ItqanNotify.wasAsked()) return;
+    if ((await ItqanNotify.state()) !== "prompt") { ItqanNotify.markAsked(); return; }
+    if (document.querySelector(".modal-overlay[style*='flex']")) return; // try again next time
+    showModal(notifyAskModal);
+  }, 2500);
+}
 
 // -------- online / offline --------
 // Net (net-status.js) knows whether the internet really works — the
@@ -1035,6 +1075,78 @@ deleteSessionBtn.addEventListener("click", async () => {
 });
 
 
+// -------- profile sections: opening one closes the others --------
+document.querySelectorAll("#view-profile details.profile-section").forEach((d) => {
+  d.addEventListener("toggle", () => {
+    if (!d.open) return;
+    document.querySelectorAll("#view-profile details.profile-section[open]").forEach((other) => {
+      if (other !== d) other.open = false;
+    });
+  });
+});
+
+// -------- selecting several sessions to delete --------
+const sessionSelectToggle = document.getElementById("sessionSelectToggle");
+const sessionSelectAll = document.getElementById("sessionSelectAll");
+const sessionSelectAllWrap = document.getElementById("sessionSelectAllWrap");
+const sessionDeleteSelectedBtn = document.getElementById("sessionDeleteSelectedBtn");
+const sessionsTable = document.querySelector(".sessions-table");
+let sessionSelecting = false;
+const sessionSelection = new Set();
+
+function isActiveSelfSession(id) {
+  const activeId = (typeof getActiveSessionId === "function") ? getActiveSessionId() : null;
+  return activeId != null && activeId === id;
+}
+function selectableSessionIds() {
+  return mySessions.map((s) => s.session_id).filter((id) => !isActiveSelfSession(id));
+}
+function setSessionSelecting(on) {
+  sessionSelecting = on;
+  sessionSelection.clear();
+  sessionsTable.classList.toggle("selecting", on);
+  sessionSelectToggle.textContent = on ? "إلغاء" : "☑️ تحديد";
+  sessionSelectAllWrap.style.display = on ? "" : "none";
+  sessionDeleteSelectedBtn.style.display = on ? "" : "none";
+  sessionSelectAll.checked = false;
+  renderSessionChips();
+  updateSessionSelectBar();
+}
+function updateSessionSelectBar() {
+  const n = sessionSelection.size;
+  const all = selectableSessionIds();
+  sessionDeleteSelectedBtn.disabled = n === 0;
+  sessionDeleteSelectedBtn.textContent = n ? `🗑 حذف المحدد (${n})` : "🗑 حذف المحدد";
+  sessionSelectAll.checked = all.length > 0 && all.every((id) => sessionSelection.has(id));
+  document.getElementById("sessionSelectBar").style.display = mySessions.length ? "" : "none";
+}
+sessionSelectToggle.addEventListener("click", () => setSessionSelecting(!sessionSelecting));
+sessionSelectAll.addEventListener("change", () => {
+  sessionSelection.clear();
+  if (sessionSelectAll.checked) selectableSessionIds().forEach((id) => sessionSelection.add(id));
+  renderSessionChips();
+  updateSessionSelectBar();
+});
+sessionDeleteSelectedBtn.addEventListener("click", async () => {
+  const ids = Array.from(sessionSelection);
+  if (!ids.length) return;
+  const allOfThem = ids.length === selectableSessionIds().length;
+  const ok = confirm(allOfThem && ids.length > 1
+    ? `حذف كل الجلسات (${ids.length})؟ سيتم حذف كل إحصائياتها ولا يمكن التراجع.`
+    : `حذف ${ids.length === 1 ? "جلسة واحدة" : ids.length + " جلسات"}؟ سيتم حذف كل إحصائياتها ولا يمكن التراجع.`);
+  if (!ok) return;
+  sessionDeleteSelectedBtn.disabled = true;
+  const deleted = await deleteSessions(ids);
+  if (deleted < 0) {
+    alert("تعذّر حذف الجلسات. تحقق من الاتصال وحاول مرة أخرى.");
+    sessionDeleteSelectedBtn.disabled = false;
+    return;
+  }
+  showInfoToast(`🗑 حُذفت ${deleted} ${deleted === 1 ? "جلسة" : "جلسات"}`);
+  setSessionSelecting(false);
+  await refreshSessionsAndShow(null);
+});
+
 async function refreshSessionsAndShow(preferSessionId) {
   statsBody.innerHTML = '<div class="status">جاري التحميل...</div>';
   sessionActions.style.display = "none";
@@ -1045,6 +1157,8 @@ async function refreshSessionsAndShow(preferSessionId) {
     // No account-level session yet (e.g. Supabase not configured, or
     // a brand new user before their first attempt synced).
     sessionChips.innerHTML = "";
+    if (sessionSelecting) setSessionSelecting(false);
+    updateSessionSelectBar();
     statsBody.innerHTML =
       '<div class="status">لا توجد جلسات بعد. أجب على بعض الأسئلة وسجّل الدخول لتبدأ أول جلسة تلقائياً.</div>';
     return;
@@ -1057,6 +1171,7 @@ async function refreshSessionsAndShow(preferSessionId) {
   }
 
   renderSessionChips();
+  updateSessionSelectBar();
   await renderSelectedSession();
 }
 
@@ -1068,8 +1183,11 @@ function renderSessionChips() {
       const answers = s.total_answers || 0;
       const acc = answers ? `${Math.round((100 * (s.total_correct || 0)) / answers)}%` : "—";
       const rangeLabel = pageRangeLabel(s) || "—";
+      const locked = isActiveSelfSession(s.session_id);
+      const checked = sessionSelection.has(s.session_id) ? " checked" : "";
       return `
         <tr class="session-row${active ? " active" : ""}" data-id="${s.session_id}">
+          <td class="sel-cell"><input type="checkbox" class="session-sel" data-id="${s.session_id}"${checked}${locked ? ' disabled title="الجلسة الجارية في ⚔️ ذاتي"' : ""}></td>
           <td>${rangeLabel}</td>
           <td>${answers}</td>
           <td>${acc}</td>
@@ -1081,9 +1199,23 @@ function renderSessionChips() {
   // Selecting a row only changes which session's stats are shown
   // below — it never changes which session new attempts are
   // recorded against (that's always the last/most recent session).
+  sessionChips.querySelectorAll(".session-sel").forEach((cb) => {
+    cb.addEventListener("click", (e) => e.stopPropagation());
+    cb.addEventListener("change", () => {
+      const id = Number(cb.dataset.id);
+      if (cb.checked) sessionSelection.add(id); else sessionSelection.delete(id);
+      updateSessionSelectBar();
+    });
+  });
   sessionChips.querySelectorAll(".session-row").forEach((row) => {
     row.addEventListener("click", async () => {
       const id = Number(row.dataset.id);
+      if (sessionSelecting) {
+        // in selection mode a tap on the row ticks it
+        const cb = row.querySelector(".session-sel");
+        if (cb && !cb.disabled) { cb.checked = !cb.checked; cb.dispatchEvent(new Event("change")); }
+        return;
+      }
       if (id === selectedSessionId) return;
       selectedSessionId = id;
       renderSessionChips();

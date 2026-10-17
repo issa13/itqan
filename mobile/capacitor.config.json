@@ -22,6 +22,10 @@
       "insetsHandling": "css",
       "style": "DEFAULT",
       "initialViewportFitValueHint": "contain"
+    },
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_itqan",
+      "iconColor": "#0E6B4F"
     }
   }
 }
