@@ -813,6 +813,28 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && invitePollTimer) pollIncomingDuelInvitesOnce();
 });
 
+// -------- online / offline --------
+// Sections that need the internet show a clear "you're offline" notice
+// (see .offline-notice in index.html / styles.css) instead of an empty or
+// endlessly-loading screen; when the connection comes back, the open tab
+// reloads its data.
+function applyOnlineState() {
+  const offline = navigator.onLine === false;
+  document.documentElement.classList.toggle("is-offline", offline);
+  return offline;
+}
+applyOnlineState();
+window.addEventListener("offline", applyOnlineState);
+window.addEventListener("online", () => {
+  applyOnlineState();
+  showInfoToast("✅ عاد الاتصال بالإنترنت");
+  if (typeof refreshCurrentView === "function") refreshCurrentView();
+  if (currentViewName === "challenge" && typeof enterOnlineDuelMode === "function" &&
+      document.getElementById("challengeOnlineWrap").style.display !== "none") {
+    enterOnlineDuelMode();
+  }
+});
+
 let lastAuthUserId; // undefined until the very first call
 
 onAuthChange(async (user, info) => {
@@ -838,6 +860,7 @@ onAuthChange(async (user, info) => {
     userActions.style.display = "flex";
     profileSignedInSections.style.display = "flex";
     profileGuestNotice.style.display = "none";
+    document.getElementById("profileAccountRows").style.display = "";
 
     const stats = await fetchUserStats();
     updateLevelBadge(stats?.xp || 0);
@@ -852,6 +875,7 @@ onAuthChange(async (user, info) => {
     userActions.style.display = "none";
     profileSignedInSections.style.display = "none";
     profileGuestNotice.style.display = "block";
+    document.getElementById("profileAccountRows").style.display = "none"; // theme stays
     userLevelBadge.style.display = "none";
     lastKnownLevel = null;
     mySessions = [];

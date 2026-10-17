@@ -1,3 +1,21 @@
+# 🎧 Recitation, profile & offline — 2026-10-17
+
+## Recitation
+- **Continuous recitation:** a page or a selected range now flows like one recording. Each ayah is a separate file on the audio site, so the next one is started a fraction of a second before the current one ends (its last moment is silence), instead of waiting for it to stop and then loading the next — that wait was the little break you heard. Measured in tests: every ayah starts ~0.16s before the previous one ends, with no gap.
+- **Speed:** a ×1 button on the player cycles ×0.75 → ×1 → ×1.25 → ×1.5 (pitch kept natural; remembered).
+- **30 reciters** (was 6): الشريم، الغامدي، الدوسري، القطامي، العجمي، الشاطري، الحذيفي، البدير، الجهني، بصفر، الرفاعي، القحطاني، القاسم، محمد أيوب، محمد جبريل، بو خاطر، العلاقمي، علي جابر، فارس عباد، الطبلاوي، and the مجود recitations of عبد الباسط / المنشاوي / الحصري, plus الحصري المعلّم. Folder names taken from everyayah.com's own list.
+- **Listen offline (📖 ⋮ → 📥 التلاوة دون إنترنت):** download this page / surah / juz / the whole Quran for the chosen reciter (approximate size shown first), with progress, stop, and delete. While listening online the app **asks once per surah** whether to download it (with «لا تسألني مجددًا»). Downloaded ayahs play from the device — also the 🔊 in quizzes and challenges, which now use your chosen reciter.
+  - In the Android/iPhone app this always works (files go to the app's own storage — new `@capacitor/filesystem` plugin; run `npm install` in `mobile/` once).
+  - On the website it works only if the audio site allows browsers to save its files; if not, the dialog says the feature is available in the phone app.
+- **Offline:** playing something that isn't downloaded says «📴 أنت غير متصل بالإنترنت …» instead of doing nothing.
+
+## Everywhere
+- **Offline notices:** الأصدقاء, لوحة الصدارة, التحديات المباشرة, the login dialog and the profile now say "you're offline — this needs an internet connection" instead of showing an empty or endlessly-loading screen; they reload by themselves when the connection is back. The Mushaf, quizzes and local challenges keep working offline.
+- **👤 Profile:** التقدم / الإنجازات / سلّم الرتب / الجلسات are collapsible and closed by default (tap a title to open). Theme, sign-out and account deletion are merged into one «⚙️ الإعدادات والحساب» section (guests see the theme there).
+- **Card shadow over buttons fixed:** cards were painted on a layer above the button under them, so their shadow covered the button. Buttons now sit above.
+- **Page-turn row:** «التالية» no longer touches the corner ornament (more space, smaller ornament).
+- Removed the "© 2026 … Built with ❤️" footer.
+
 # 📖 Reader, listening, sign-up & duels — 2026-10-16
 
 ## To do on your side (once)

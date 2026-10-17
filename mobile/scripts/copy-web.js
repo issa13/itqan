@@ -39,6 +39,7 @@ const WEB_FILES = [
   "auth-ui.js",
   "app.js",
   "quran-reader.js",
+  "audio-store.js",
   "manifest.webmanifest",
 ];
 const WEB_FOLDERS = ["vendor", "fonts", "icons", "quran-index", "mushaf-layout"];

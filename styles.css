@@ -339,6 +339,12 @@ body::before {
   transition: transform 0.16s var(--ease), box-shadow 0.16s var(--ease), background-color 0.16s var(--ease), border-color 0.16s var(--ease);
 }
 
+/* Buttons sit on their own layer: cards (.mcq-card etc.) are positioned for
+   their corner ornaments, which paints them — and their soft shadow — ABOVE
+   a following non-positioned button, so the card looked "higher" than the
+   button below it. */
+.btn, .settings-accordion-header { position: relative; }
+
 .btn:hover:not(:disabled) { transform: translateY(-1px); }
 .btn:active:not(:disabled) { transform: translateY(0) scale(0.98); }
 
@@ -2132,8 +2138,12 @@ select:focus, input:focus {
 }
 .quran-page-viewport::before { top: 10px; inset-inline-start: 10px; }
 .quran-page-viewport::after {
-  bottom: 10px;
-  inset-inline-end: 10px;
+  /* tucked into the very corner so it frames the page-turn button
+     instead of running into it */
+  bottom: 4px;
+  inset-inline-end: 4px;
+  width: 22px;
+  height: 22px;
   border-top: none;
   border-inline-start: none;
   border-bottom: 2px solid var(--gold);
@@ -2557,7 +2567,66 @@ body.quran-player-on .wrap:not(.reading-quran) {
 @media (max-width: 600px) {
   .quran-page-viewport { padding: 10px 8px 6px; }
   .quran-page-content { padding-inline: 4px; }
-  .quran-page-nav { margin-top: 4px; padding-top: 5px; gap: 6px; }
+  .quran-page-nav { margin-top: 4px; padding-top: 5px; gap: 6px; padding-inline: 10px 14px; }
   .quran-page-nav .btn { padding: 6px 12px; font-size: 13px; }
   .quran-page-indicator { font-size: 12px; }
 }
+
+/* -------- 📥 offline recitation dialog + speed button -------- */
+.quran-mini-controls .quran-speed-btn { padding: 6px 9px; font-size: 12.5px; font-weight: 800; white-space: nowrap; }
+.quran-mini-controls .quran-speed-btn.on { background: var(--success-bg); border-color: rgba(var(--emerald-rgb), 0.45); color: var(--accent-text); }
+.dl-reciter-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.dl-reciter-name { font-weight: 800; color: var(--accent-text); font-size: 15px; }
+.dl-summary { font-size: 13px; color: var(--ink); line-height: 1.8; }
+.dl-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.dl-choices .btn { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 6px; border-radius: var(--radius-md); }
+.dl-choices .btn.done { background: var(--success-bg); }
+.dl-size { font-size: 11px; font-weight: 600; color: var(--muted); }
+.dl-progress { margin-top: 12px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.dl-progress-text { font-size: 12.5px; font-weight: 700; color: var(--accent-text); }
+.dl-delete { color: var(--danger); margin-top: 14px; }
+
+/* -------- 👤 profile: collapsible sections (closed by default) -------- */
+details.profile-section > summary {
+  list-style: none;
+  cursor: pointer;
+  margin-bottom: 0;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+details.profile-section > summary::-webkit-details-marker { display: none; }
+details.profile-section[open] > summary { margin-bottom: 12px; }
+.profile-section-chevron { color: var(--muted); font-size: 14px; transition: transform 0.2s var(--ease); transform: rotate(90deg); }
+details.profile-section[open] .profile-section-chevron { transform: none; }
+details.profile-section > summary:focus-visible { outline: 2px solid var(--gold); outline-offset: 4px; border-radius: 8px; }
+.settings-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 0; border-top: 1px dashed rgba(var(--gold-rgb), 0.25);
+}
+#profileSettingsSection > .settings-row:first-of-type { border-top: none; padding-top: 0; }
+.settings-row-label { font-size: 13.5px; font-weight: 700; color: var(--ink); line-height: 1.6; }
+.settings-row .btn { flex-shrink: 0; }
+.delete-account-row .settings-row-label { color: var(--danger); font-weight: 600; font-size: 12.5px; }
+
+/* -------- offline: say so instead of showing empty / stuck screens --------
+   html.is-offline is toggled in auth-ui.js from the browser's online /
+   offline events. data-needs-online="hide": the whole section needs the
+   internet (its content is hidden behind the notice); "note": the notice
+   is shown above content that still partly works. */
+.offline-notice { display: none; }
+html.is-offline .offline-notice {
+  display: block;
+  width: min(94vw, var(--maxw));
+  margin: 0 auto;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(var(--gold-rgb), 0.14);
+  border: 1px solid rgba(var(--gold-rgb), 0.4);
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 700;
+  line-height: 1.8;
+  text-align: center;
+}
+#authModal .offline-notice { width: 100%; margin-bottom: 10px; }
+html.is-offline [data-needs-online="hide"] > :not(.offline-notice) { display: none !important; }

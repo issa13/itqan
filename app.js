@@ -782,9 +782,19 @@ async function fetchAyahAudioUrl(reference) {
     ayah = entry.ayah;
   }
   if (!surah || !ayah) return null;
-  const surahPadded = String(surah).padStart(3, "0");
-  const ayahPadded = String(ayah).padStart(3, "0");
-  return `https://everyayah.com/data/Alafasy_128kbps/${surahPadded}${ayahPadded}.mp3`;
+  // The reciter chosen in 📖 (🎙️ القارئ), and the copy downloaded on this
+  // device when there is one (📥 — see audio-store.js), so quiz audio also
+  // works offline for downloaded ayahs.
+  const folder = (typeof quranReciterFolder === "function") ? quranReciterFolder() : "Alafasy_128kbps";
+  if (typeof QuranAudioStore !== "undefined") {
+    const src = await QuranAudioStore.resolve(folder, surah, ayah);
+    if (!src.local && !QuranAudioStore.isOnline()) {
+      if (typeof showInfoToast === "function") showInfoToast("📴 أنت غير متصل بالإنترنت — الاستماع يحتاج اتصالًا، أو حمّل التلاوة مسبقًا (📖 ⋮ ← 📥).");
+      return null;
+    }
+    return src.url;
+  }
+  return `https://everyayah.com/data/${folder}/${String(surah).padStart(3, "0")}${String(ayah).padStart(3, "0")}.mp3`;
 }
 
 function stopAudio() {
