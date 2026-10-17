@@ -785,16 +785,22 @@ async function fetchAyahAudioUrl(reference) {
   // The reciter chosen in 📖 (🎙️ القارئ), and the copy downloaded on this
   // device when there is one (📥 — see audio-store.js), so quiz audio also
   // works offline for downloaded ayahs.
-  const folder = (typeof quranReciterFolder === "function") ? quranReciterFolder() : "Alafasy_128kbps";
+  const folder = (typeof quranQuizAudioFolder === "function") ? quranQuizAudioFolder() : "Alafasy_128kbps";
   if (typeof QuranAudioStore !== "undefined") {
     const src = await QuranAudioStore.resolve(folder, surah, ayah);
-    if (!src.local && !QuranAudioStore.isOnline()) {
-      if (typeof showInfoToast === "function") showInfoToast("📴 أنت غير متصل بالإنترنت — الاستماع يحتاج اتصالًا، أو حمّل التلاوة مسبقًا (📖 ⋮ ← 📥).");
-      return null;
-    }
     return src.url;
   }
   return `https://everyayah.com/data/${folder}/${String(surah).padStart(3, "0")}${String(ayah).padStart(3, "0")}.mp3`;
+}
+
+// Audio wouldn't play: if that's because there's no internet, say so
+// (and point to downloading the recitation).
+async function audioFailedOfflineHint() {
+  if (typeof Net === "undefined") return;
+  await Net.probeNow();
+  if (!Net.isOnline() && typeof showInfoToast === "function") {
+    showInfoToast("📴 أنت غير متصل بالإنترنت — الاستماع يحتاج اتصالًا، أو حمّل التلاوة مسبقًا (📖 ⋮ ← 📥).");
+  }
 }
 
 function stopAudio() {
@@ -846,6 +852,7 @@ playAudioBtn.addEventListener("click", async () => {
   } catch (e) {
     stopAudio();
     setStatus("تعذّر تشغيل الصوت. حاول مرة أخرى.");
+    audioFailedOfflineHint();
   } finally {
     playAudioBtn.disabled = false;
   }
@@ -1953,6 +1960,7 @@ challengePlayAudioBtn.addEventListener("click", async () => {
     challengePlayAudioBtn.classList.add("playing");
   } catch (e) {
     challengeAudioStop();
+    audioFailedOfflineHint();
   } finally {
     challengePlayAudioBtn.disabled = false;
   }
@@ -3279,6 +3287,7 @@ duelPlayAudioBtn.addEventListener("click", async () => {
     unlockDuelChoicesAfterListening();
   } catch (e) {
     duelAudioStop();
+    audioFailedOfflineHint();
   } finally {
     duelPlayAudioBtn.disabled = false;
   }
@@ -3881,6 +3890,7 @@ selfPlayAudioBtn.addEventListener("click", async () => {
     selfPlayAudioBtn.classList.add("playing");
   } catch (e) {
     selfAudioStop();
+    audioFailedOfflineHint();
   } finally {
     selfPlayAudioBtn.disabled = false;
   }

@@ -69,7 +69,7 @@
   //  • Android: the strips behind the bars get the page's --paper colour
   //    (our own small plugin, android/…/ItqanWindowPlugin.java).
   var PAPER_LIGHT = "#f4efe1"; // keep in sync with --paper in styles.css
-  var PAPER_DARK = "#14180f";
+  var PAPER_DARK = "#111916";
   function syncSystemBars() {
     var dark = root.getAttribute("data-theme") === "dark";
     if (SystemBars) safe(SystemBars.setStyle({ style: dark ? "DARK" : "LIGHT" }));

@@ -13,7 +13,11 @@ const isConfigured =
   typeof window.supabase !== "undefined";
 
 const sb = isConfigured
-  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      // Net.fetch (net-status.js): time limits, real offline detection and
+      // the last-saved copy of every read for offline use.
+      global: { fetch: (typeof Net !== "undefined") ? Net.fetch : undefined },
+    })
   : null;
 
 let currentUser = null;
@@ -404,7 +408,7 @@ async function setSessionPublic(sessionId, isPublic) {
 // early_bird/weekend_warrior badges reflect the person's actual time.
 async function recordAttempt({ questionType, page, isCorrect, sessionId, rangeMin, rangeMax, localHour, isWeekend }) {
   if (!sb || !currentUser) return { ok: false, newlyEarned: [], xp: null, xpGained: 0, currentStreak: 0 };
-  const { data, error } = await sb.rpc("record_attempt", {
+  const params = {
     p_session_id: sessionId || null,
     p_question_type: questionType,
     p_page: page,
@@ -413,8 +417,19 @@ async function recordAttempt({ questionType, page, isCorrect, sessionId, rangeMi
     p_range_max: rangeMax ?? null,
     p_local_hour: localHour ?? null,
     p_is_weekend: isWeekend ?? null,
-  });
+  };
+  // No internet: keep the answer on the device; it's sent (XP, streaks,
+  // achievements) as soon as the connection is back — see flushAttemptQueue().
+  if (typeof Net !== "undefined" && !Net.isOnline()) {
+    queueAttempt(params);
+    return { ok: false, queued: true, newlyEarned: [], xp: null, xpGained: 0, currentStreak: 0 };
+  }
+  const { data, error } = await sb.rpc("record_attempt", params);
   if (error) {
+    if (typeof Net !== "undefined" && Net.isNetworkError(error)) {
+      queueAttempt(params);
+      return { ok: false, queued: true, newlyEarned: [], xp: null, xpGained: 0, currentStreak: 0 };
+    }
     console.error("recordAttempt error", error);
     return { ok: false, newlyEarned: [], xp: null, xpGained: 0, currentStreak: 0 };
   }
@@ -425,6 +440,68 @@ async function recordAttempt({ questionType, page, isCorrect, sessionId, rangeMi
     xpGained: typeof data?.xpGained === "number" ? data.xpGained : 0,
     currentStreak: typeof data?.currentStreak === "number" ? data.currentStreak : 0,
   };
+}
+
+// -------- answers given offline: saved here, synced later --------
+// Per account, in localStorage, oldest first. Sent one by one (the server
+// accepts at most one answer per 350 ms) when the connection comes back,
+// at sign-in, and at start-up.
+const ATTEMPT_QUEUE_PREFIX = "qf_pending_attempts:";
+const ATTEMPT_QUEUE_MAX = 2000;
+function attemptQueueKey(uid) { return ATTEMPT_QUEUE_PREFIX + uid; }
+function readAttemptQueue(uid) {
+  try { return JSON.parse(localStorage.getItem(attemptQueueKey(uid)) || "[]"); } catch (e) { return []; }
+}
+function writeAttemptQueue(uid, list) {
+  try {
+    if (list.length) localStorage.setItem(attemptQueueKey(uid), JSON.stringify(list.slice(-ATTEMPT_QUEUE_MAX)));
+    else localStorage.removeItem(attemptQueueKey(uid));
+  } catch (e) { /* storage full */ }
+}
+function queueAttempt(params) {
+  if (!currentUser) return;
+  const list = readAttemptQueue(currentUser.id);
+  list.push({ ...params, queued_at: new Date().toISOString() });
+  writeAttemptQueue(currentUser.id, list);
+  attemptQueueListeners.forEach((fn) => { try { fn(list.length); } catch (e) { /* ignore */ } });
+}
+function pendingAttemptCount() {
+  return currentUser ? readAttemptQueue(currentUser.id).length : 0;
+}
+const attemptQueueListeners = [];
+function onAttemptQueueChange(fn) { attemptQueueListeners.push(fn); }
+
+let flushingAttempts = null;
+// Resolves to { sent, earned: [codes], xp } (or null if nothing to do).
+function flushAttemptQueue() {
+  if (flushingAttempts) return flushingAttempts;
+  flushingAttempts = (async () => {
+    if (!sb || !currentUser || (typeof Net !== "undefined" && !Net.isOnline())) return null;
+    const uid = currentUser.id;
+    let list = readAttemptQueue(uid);
+    if (!list.length) return null;
+    let sent = 0, xp = null;
+    const earned = [];
+    while (list.length && currentUser && currentUser.id === uid) {
+      const { queued_at, ...params } = list[0];
+      const { data, error } = await sb.rpc("record_attempt", params);
+      if (error) {
+        if (typeof Net !== "undefined" && Net.isNetworkError(error)) break; // offline again — keep the rest
+        if (/rate|too many|350/i.test(error.message || "")) { await new Promise((r) => setTimeout(r, 800)); continue; }
+        console.error("queued attempt rejected", error); // invalid now (e.g. session deleted) — drop it
+      } else {
+        sent += 1;
+        if (Array.isArray(data?.earned)) earned.push(...data.earned);
+        if (typeof data?.xp === "number") xp = data.xp;
+      }
+      list = list.slice(1);
+      writeAttemptQueue(uid, list);
+      attemptQueueListeners.forEach((fn) => { try { fn(list.length); } catch (e) { /* ignore */ } });
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    return { sent, earned, xp };
+  })().finally(() => { flushingAttempts = null; });
+  return flushingAttempts;
 }
 
 // Per-type breakdown for a single session (used in the stats modal)

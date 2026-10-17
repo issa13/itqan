@@ -9,7 +9,7 @@
     "sync:ios": "node scripts/copy-web.js && npx cap sync ios",
     "android": "npm run sync:android && npx cap open android",
     "ios": "npm run sync:ios && npx cap open ios",
-    "icons": "npx @capacitor/assets generate --android --ios --iconBackgroundColor \"#0e6b4f\" --iconBackgroundColorDark \"#0e6b4f\" --splashBackgroundColor \"#f4efe1\" --splashBackgroundColorDark \"#14180f\""
+    "icons": "npx @capacitor/assets generate --android --ios --iconBackgroundColor \"#0e6b4f\" --iconBackgroundColorDark \"#0e6b4f\" --splashBackgroundColor \"#f4efe1\" --splashBackgroundColorDark \"#111916\""
   },
   "dependencies": {
     "@capacitor/android": "^8.5.3",

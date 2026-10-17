@@ -1,3 +1,24 @@
+# 📴 Real offline mode, floating player & new look — 2026-10-17
+
+## Offline — the app now really knows, and tells the user
+- **Why your phone showed "جاري التحميل..." forever:** phones say "online" whenever they're connected to a network, even when no data gets through (mobile data without balance/signal, Wi-Fi without internet). The app trusted that. Now `net-status.js` checks for real: every request has a time limit (15s), a request that can't reach the server switches the app to offline, and while offline it quietly re-checks every 6s.
+- **The user is told:** a 📴 «غير متصل» chip in the top bar on every tab (tap it for an explanation), a one-time message, and notices on the pages that need the internet.
+- **Last saved data instead of empty pages:** profile, friends, leaderboard and duel stats keep a copy of what they last loaded (per account, on the device — cleared at sign-out) and show it offline.
+- **Answers are kept and synced:** a quiz / ذاتي answer given offline is saved on the device («📴 غير متصل · ٣ بانتظار المزامنة»), then sent automatically when the connection is back (XP, streaks, achievements included) — "✅ تمت مزامنة ٣ إجابة".
+- Audio still always tries to play (the recitation site may work even if the app's server doesn't); if it fails and there's really no internet, the user is told.
+
+## Recitation
+- **Floating player:** listening no longer shrinks the Mushaf page. The controls float over the page and tuck themselves away after a few seconds; on 📖 the 🎧 by the page number turns into a small "playing" animation — tap it to bring the controls back (⌄ hides them). On other tabs a small round button does the same.
+- **إدريس أبكر** added. His recitation exists only as one file per surah (mp3quran.net), so the app uses mp3quran's published start/end time of every verse and plays verses as parts of the surah file — page, range, single verse, repeat, speed, highlighting and offline download all work. (Quiz audio falls back to the default reciter for him.)
+- **Download offer:** «لا تسألني مجددًا» is replaced by «⏰ لاحقًا — ذكّرني مرة أخرى»: it asks again from the next day. Downloading is also always available from ⋮ → 📥.
+- App downloads are now streamed straight to storage (safe for big whole-surah files).
+
+## Look
+- **Page-turn buttons:** icons only (▶ / ◀).
+- **New background:** the checkerboard is replaced by soft colour glows and a faint eight-pointed-star (khātam) lattice that fades towards the middle.
+- **Dark theme reworked:** deep green-black instead of olive-brown; cards are lighter surfaces with a hairline edge instead of heavy shadows; the gold line on cards is softened; text is a cool off-white with clearer secondary text; accent green is calmer; inputs sit slightly below the card; the bottom bar is translucent. App status bar / splash colours updated to match.
+- Toast messages are wider and easier to read.
+
 # 🎧 Recitation, profile & offline — 2026-10-17
 
 ## Recitation

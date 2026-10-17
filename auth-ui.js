@@ -60,7 +60,7 @@ function setThemeButtonLabel() {
   // keep the mobile browser's address-bar colour in step with the chosen
   // theme (the <meta> tags only know the system setting)
   document.querySelectorAll('meta[name="theme-color"]').forEach((m) => {
-    m.setAttribute("content", currentTheme() === "dark" ? "#14180f" : "#f4efe1");
+    m.setAttribute("content", currentTheme() === "dark" ? "#111916" : "#f4efe1");
   });
 }
 
@@ -138,6 +138,10 @@ function switchView(name, options) {
   });
 
   topbarPageTitleText.textContent = TOPBAR_TITLES[name] || "";
+  // the floating recitation player sits differently on 📖 and other tabs
+  if (document.body.classList.contains("quran-player-on") && typeof quranPositionPlayer === "function") {
+    requestAnimationFrame(quranPositionPlayer);
+  }
   // The quran ⋮ menu travels with the title, in the same topbar slot
   // it used to occupy in-page — only relevant on that one tab.
   quranMenuWrap.style.display = (name === "quran") ? "flex" : "none";
@@ -814,26 +818,73 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // -------- online / offline --------
-// Sections that need the internet show a clear "you're offline" notice
-// (see .offline-notice in index.html / styles.css) instead of an empty or
-// endlessly-loading screen; when the connection comes back, the open tab
-// reloads its data.
-function applyOnlineState() {
-  const offline = navigator.onLine === false;
-  document.documentElement.classList.toggle("is-offline", offline);
-  return offline;
+// Net (net-status.js) knows whether the internet really works — the
+// phone's own "online" flag can't be trusted. When it doesn't:
+//   • a 📴 chip in the top bar says so on every tab (with the number of
+//     answers waiting to be synced), plus a one-time message;
+//   • profile / friends / leaderboard show the last data saved on this
+//     device, with a notice; live duels and login say they need internet;
+//   • answers are kept and synced when the connection is back.
+const netChip = document.getElementById("netStatusChip");
+
+function renderNetChip() {
+  if (!netChip) return;
+  const online = typeof Net === "undefined" || Net.isOnline();
+  const pending = (typeof pendingAttemptCount === "function") ? pendingAttemptCount() : 0;
+  if (online && !pending) { netChip.style.display = "none"; return; }
+  netChip.style.display = "";
+  netChip.classList.toggle("syncing", online);
+  netChip.textContent = online
+    ? `🔄 مزامنة ${toArabicDigitsSafe(pending)}…`
+    : (pending ? `📴 غير متصل · ${toArabicDigitsSafe(pending)} بانتظار المزامنة` : "📴 غير متصل");
 }
-applyOnlineState();
-window.addEventListener("offline", applyOnlineState);
-window.addEventListener("online", () => {
-  applyOnlineState();
-  showInfoToast("✅ عاد الاتصال بالإنترنت");
+function toArabicDigitsSafe(n) {
+  return String(n).replace(/[0-9]/g, (d) => "٠١٢٣٤٥٦٧٨٩"[d]);
+}
+if (netChip) {
+  netChip.addEventListener("click", () => {
+    const online = typeof Net === "undefined" || Net.isOnline();
+    showInfoToast(online
+      ? "جارٍ إرسال إجاباتك المحفوظة إلى حسابك…"
+      : "📴 لا يوجد اتصال بالإنترنت. القرآن والاختبارات والتحديات المحلية تعمل، وتُحفظ إجاباتك على جهازك وتُرسل تلقائيًا عند عودة الاتصال.");
+    if (typeof Net !== "undefined") Net.probeNow();
+  });
+}
+
+async function syncPendingAnswers() {
+  if (typeof flushAttemptQueue !== "function") return;
+  renderNetChip();
+  const result = await flushAttemptQueue();
+  renderNetChip();
+  if (!result || !result.sent) return;
+  showInfoToast(`✅ تمت مزامنة ${toArabicDigitsSafe(result.sent)} إجابة حُفظت دون إنترنت`);
+  if (result.earned.length && typeof showAchievementToasts === "function") showAchievementToasts(result.earned);
+  if (result.xp != null) updateLevelBadge(result.xp);
   if (typeof refreshCurrentView === "function") refreshCurrentView();
-  if (currentViewName === "challenge" && typeof enterOnlineDuelMode === "function" &&
-      document.getElementById("challengeOnlineWrap").style.display !== "none") {
-    enterOnlineDuelMode();
-  }
-});
+}
+
+if (typeof Net !== "undefined") {
+  let toldOffline = false;
+  Net.onChange((online) => {
+    renderNetChip();
+    if (!online) {
+      if (!toldOffline) {
+        toldOffline = true;
+        showInfoToast("📴 أنت غير متصل بالإنترنت — ستُحفظ إجاباتك وتُزامَن عند عودة الاتصال.");
+      }
+      return;
+    }
+    toldOffline = false;
+    showInfoToast("✅ عاد الاتصال بالإنترنت");
+    syncPendingAnswers();
+    if (typeof refreshCurrentView === "function") refreshCurrentView();
+    if (currentViewName === "challenge" && typeof enterOnlineDuelMode === "function" &&
+        document.getElementById("challengeOnlineWrap").style.display !== "none") {
+      enterOnlineDuelMode();
+    }
+  });
+}
+if (typeof onAttemptQueueChange === "function") onAttemptQueueChange(renderNetChip);
 
 let lastAuthUserId; // undefined until the very first call
 
@@ -869,6 +920,8 @@ onAuthChange(async (user, info) => {
       subscribeToIncomingDuelInvites((row) => handleIncomingDuelRow(row));
     }
     startIncomingInvitePoll();
+    renderNetChip();
+    syncPendingAnswers();
     if (typeof initKnownAchievementCache === "function") await initKnownAchievementCache();
   } else {
     guestActions.style.display = "flex";
@@ -883,6 +936,9 @@ onAuthChange(async (user, info) => {
 
     if (typeof unsubscribeFromIncomingDuelInvites === "function") unsubscribeFromIncomingDuelInvites();
     stopIncomingInvitePoll();
+    // the previous account's saved copies must not show for the next person
+    if (changedUser && typeof Net !== "undefined") Net.clearCache();
+    renderNetChip();
     handledDuelInviteIds.clear();
     hideDuelInviteBanner();
     hideModal(newPasswordModal);

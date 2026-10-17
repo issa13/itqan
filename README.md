@@ -26,6 +26,7 @@ Everything else — the Quran text itself, page layout, search, question generat
 | `supabase-client.js` | Thin wrapper around the Supabase SDK — login, signup, and every database call. |
 | `auth-ui.js` | Wires up login/signup UI, profile, friends, leaderboard, and switching between tabs. |
 | `app.js` | The core: solo quiz ("اختبارات"), challenges ("تحديات" — 📱 محلي, 🌐 مباشر, 📝 ذاتي), XP/leveling, and the online-duel *client* (the UI side, not the server side). |
+| `net-status.js` | Knows whether the internet really works (phones say "online" even when no data gets through): time limits on every request, offline/online switching, a saved copy of the last loaded data for offline use. `supabase-client.js` sends everything through it and queues answers given offline. |
 | `audio-store.js` | Recitation saved on the device for offline listening (📥): the app's own storage in the phone app, the browser's Cache Storage on the website. Also decides whether an ayah plays from the device or the internet. |
 | `quran-reader.js` | The whole "📖 القرآن" reading tab — page rendering, search, bookmarks, reciter choice, listen-to-a-range (with gapless-ish preloading), and swipe-to-turn-page on mobile. |
 | `supabase/functions/generate-duel-questions/index.ts` | A **Supabase Edge Function** — server-side code that generates the questions for online duels (🌐 مباشر). Runs on Supabase's servers, not in the browser. |

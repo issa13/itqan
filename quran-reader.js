@@ -60,7 +60,14 @@ const QURAN_RECITERS = [
   { id: "ea.minshawimujawwad", name: "محمد صديق المنشاوي (مجود)", folder: "Minshawy_Mujawwad_192kbps" },
   { id: "ea.husarymujawwad", name: "محمود خليل الحصري (مجود)", folder: "Husary_128kbps_Mujawwad" },
   { id: "ea.husarymuallim", name: "محمود خليل الحصري (المعلّم)", folder: "Husary_Muallim_128kbps" },
+  // One file per SURAH (mp3quran.net) + the time each ayah starts/ends in
+  // it — see audio-store.js. Ayahs play as clips of the surah file.
+  { id: "mp3q.idrees", name: "إدريس أبكر", folder: "mp3quran-idrees-abkar",
+    surahServer: "https://cdn.mp3quran.net/audio/idrees-abkar/r1/", timingRead: 12 },
 ];
+QURAN_RECITERS.forEach((r) => {
+  if (r.surahServer && typeof QuranAudioStore !== "undefined") QuranAudioStore.registerSurahSource(r.folder, r.surahServer, r.timingRead);
+});
 
 // -------- DOM --------
 const quranShellEl = document.querySelector(".quran-shell");
@@ -289,9 +296,8 @@ function resizeQuranShell() {
   // exactly one screen tall — the reader never scrolls, and the Mushaf
   // page gets all the remaining height (it used to lose ~35px to the
   // generic 96px bottom padding every other tab needs).
-  const player = document.getElementById("quranListenPlayer");
-  const playerHeight = (player && player.style.display !== "none") ? player.offsetHeight + 6 : 0;
-  const reserved = navHeight + 5 + playerHeight;
+  // (the recitation player floats over the page — it takes no height)
+  const reserved = navHeight + 5;
   quranShellEl.style.marginBottom = reserved + "px";
   const available = window.innerHeight - top - reserved;
   quranShellEl.style.height = Math.max(360, available) + "px";
@@ -981,7 +987,13 @@ function quranStopAudio() {
 function updateQuranAudioButtons() {
   const singleKey = (typeof quranRangeQueue !== "undefined" && quranRangeQueue.length === 1) ? quranRangePlayingKey : null;
   const pageBtn = document.getElementById("quranPageListenBtn");
-  if (pageBtn) pageBtn.classList.toggle("playing", typeof quranRangeQueue !== "undefined" && quranRangeQueue.length > 1 && quranRangeIsCurrentPage);
+  const anyPlaying = typeof quranRangeQueue !== "undefined" && quranRangeQueue.length > 0;
+  if (pageBtn && pageBtn.classList.contains("playing") !== anyPlaying) {
+    // only when it changes: re-creating it under a finger would lose the tap
+    pageBtn.classList.toggle("playing", anyPlaying);
+    pageBtn.innerHTML = anyPlaying ? '<span class="eq"><i></i><i></i><i></i></span>' : "🎧";
+    pageBtn.setAttribute("aria-label", anyPlaying ? "مشغّل التلاوة" : "استمع لهذه الصفحة");
+  }
   quranPageContent.querySelectorAll(".quran-ayah-audio-btn").forEach((btn) => {
     const key = `${btn.dataset.surah}:${btn.dataset.ayah}`;
     const isPlaying = key === quranPlayingAyahKey || key === singleKey;
@@ -1109,13 +1121,33 @@ function quranReciterFolder() {
   return (QURAN_RECITERS.find((r) => r.id === quranSelectedReciter) || QURAN_RECITERS[0]).folder;
 }
 
+// Quiz / challenge audio plays single ayah files, so a one-file-per-surah
+// reciter falls back to the default reciter there.
+function quranQuizAudioFolder() {
+  const r = QURAN_RECITERS.find((x) => x.id === quranSelectedReciter) || QURAN_RECITERS[0];
+  return r.surahServer ? QURAN_RECITERS[0].folder : r.folder;
+}
+
+function quranClipFor(timings, ayah) {
+  const row = timings && timings[ayah - 1];
+  if (!row) return null;
+  return { start: row[0] / 1000, end: row[1] / 1000, last: ayah === timings.length };
+}
+
 let quranCreateAudio = async function (step) {
   const folder = quranReciterFolder();
+  let timings = null, clip = null;
+  if (QuranAudioStore.isSurahSource(folder)) {
+    timings = await QuranAudioStore.getTimings(folder, step.surah); // throws offline if never saved
+    clip = quranClipFor(timings, step.ayah);
+    if (!clip) throw new Error("no timing for ayah");
+  }
   const src = await QuranAudioStore.resolve(folder, step.surah, step.ayah);
   const el = new Audio();
   el.preload = "auto";
-  el._itqan = { url: src.url, local: src.local, folder, surah: step.surah, ayah: step.ayah };
+  el._itqan = { url: src.url, local: src.local, folder, surah: step.surah, ayah: step.ayah, timings, clip };
   quranApplyRate(el);
+  if (clip) el.addEventListener("loadedmetadata", () => { el.currentTime = el._itqan.clip.start; }, { once: true });
   el.src = src.url;
   el.load();
   return el;
@@ -1146,9 +1178,18 @@ function quranRangeClearPreload() {
 function quranRefreshPreload() {
   const wanted = new Map();
   let p = quranCurrentPos;
-  for (let i = 0; i < QURAN_RANGE_PRELOAD_AHEAD; i++) {
+  const surahFiles = QuranAudioStore.isSurahSource(quranReciterFolder());
+  const curSurah = quranCurrentPos ? quranRangeQueue[quranCurrentPos.index]?.surah : null;
+  for (let i = 0; i < (surahFiles ? 400 : QURAN_RANGE_PRELOAD_AHEAD); i++) {
     p = quranNextPos(p);
     if (!p) break;
+    // one file per surah: the same element keeps playing inside a surah,
+    // so only the first ayah of the NEXT surah file needs preparing
+    if (surahFiles) {
+      if (quranRangeQueue[p.index]?.surah === curSurah) continue;
+      wanted.set(quranPosKey(p), p);
+      break;
+    }
     wanted.set(quranPosKey(p), p);
   }
   for (const [key, promise] of quranRangePreloadCache) {
@@ -1234,6 +1275,11 @@ function quranStartHandoffWatch() {
   quranHandoffTimer = setInterval(() => {
     const el = quranRangeAudioEl;
     if (!el || quranRangePaused || quranHandingOff || el.paused) return;
+    const clip = el._itqan && el._itqan.clip;
+    if (clip) {
+      if (el.currentTime >= clip.end - 0.03) quranClipBoundary(el);
+      return;
+    }
     const d = el.duration;
     if (!isFinite(d) || d <= 0) return;
     if ((d - el.currentTime) / (el.playbackRate || 1) <= QURAN_GAPLESS_LEAD_S) quranAdvanceFrom(el, false);
@@ -1241,6 +1287,25 @@ function quranStartHandoffWatch() {
 }
 function quranStopHandoffWatch() {
   if (quranHandoffTimer) { clearInterval(quranHandoffTimer); quranHandoffTimer = null; }
+}
+
+// A one-file-per-surah ayah reached its end time. Inside the same surah
+// the SAME element simply carries on (or jumps back for a repeat) — no new
+// file, no gap at all; a new surah goes through the normal hand-over.
+function quranClipBoundary(el) {
+  if (el !== quranRangeAudioEl || quranHandingOff || !quranRangeQueue.length) return;
+  const next = quranNextPos(quranCurrentPos);
+  if (!next) { el.pause(); quranRangeFinished(); return; }
+  const cur = quranRangeQueue[quranCurrentPos.index];
+  const nxt = quranRangeQueue[next.index];
+  const clip = nxt && nxt.surah === cur.surah ? quranClipFor(el._itqan.timings, nxt.ayah) : null;
+  if (!clip) { quranAdvanceFrom(el, true); return; }
+  const contiguous = Math.abs(clip.start - el._itqan.clip.end) < 0.06;
+  el._itqan.clip = clip;
+  el._itqan.ayah = nxt.ayah;
+  if (!contiguous) el.currentTime = clip.start;
+  quranMarkPosition(next, cur);
+  quranRefreshPreload();
 }
 
 async function quranAdvanceFrom(el, ended) {
@@ -1258,6 +1323,35 @@ async function quranAdvanceFrom(el, ended) {
   }
   quranHandingOff = true;
   try { await quranPlayPos(next); } finally { quranHandingOff = false; }
+}
+
+// On a connection that's "up" but carries no data, play() can wait forever
+// instead of failing — give up after a while so the person gets told.
+function quranPlayWithTimeout(el) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn, v) => { if (!done) { done = true; clearTimeout(t); el.removeEventListener("error", onErr); fn(v); } };
+    const onErr = () => finish(reject, new Error("audio error"));
+    const t = setTimeout(() => finish(reject, new Error("audio timeout")), el._itqan && el._itqan.local ? 8000 : 12000);
+    el.addEventListener("error", onErr);
+    el.play().then(() => finish(resolve), (e) => finish(reject, e));
+  });
+}
+
+// Status text, the highlighted ayah, and the page following along.
+function quranMarkPosition(pos, previousStep) {
+  const step = quranRangeQueue[pos.index];
+  if (!step) return;
+  quranCurrentPos = pos;
+  quranRangeIndex = pos.index;
+  quranRangeAyahRep = pos.rep;
+  quranRangeLoop = pos.loop;
+  quranRangePlayingKey = `${step.surah}:${step.ayah}`;
+  getQuranCatalogMap().then((m) => {
+    if (quranCurrentPos === pos) quranListenNowPlaying.textContent = quranRangeStatusText(step, m.get(step.surah)?.name || step.surah);
+  });
+  applyQuranPlayingHighlight();
+  quranRangeFollow(step, previousStep).then(applyQuranPlayingHighlight);
 }
 
 async function quranPlayPos(pos) {
@@ -1279,8 +1373,11 @@ async function quranPlayPos(pos) {
   try { el = await elPromise; } catch (e) { el = null; }
   if (session !== quranPlaySession) { quranDisposeAudio(el); return; }
 
-  // Not on this device and no internet: say so instead of failing quietly.
-  if (!el || (!el._itqan.local && !QuranAudioStore.isOnline())) {
+  // Couldn't even prepare it (e.g. a surah reciter's verse times were
+  // never saved and there's no internet): say so instead of failing quietly.
+  // Streaming is otherwise always TRIED — the audio site may be reachable
+  // even when the app's own server isn't; failures are handled below.
+  if (!el) {
     quranDisposeAudio(el);
     quranShowOfflineAudioMessage();
     return;
@@ -1300,16 +1397,10 @@ async function quranPlayPos(pos) {
     setTimeout(() => { if (quranRangeTailEls.delete(previous)) quranDisposeAudio(previous); }, 1500);
   }
 
-  // status, highlight, and the page follows along (not awaited — audio first)
-  quranRangePlayingKey = `${step.surah}:${step.ayah}`;
-  getQuranCatalogMap().then((m) => {
-    if (quranCurrentPos === pos) quranListenNowPlaying.textContent = quranRangeStatusText(step, m.get(step.surah)?.name || step.surah);
-  });
-  applyQuranPlayingHighlight();
-  quranRangeFollow(step, previousStep).then(applyQuranPlayingHighlight);
+  quranMarkPosition(pos, previousStep);
 
   try {
-    if (!quranRangePaused) await el.play();
+    if (!quranRangePaused) await quranPlayWithTimeout(el);
     if (session !== quranPlaySession) return;
     quranRangeFailures = 0;
     quranStartHandoffWatch();
@@ -1318,6 +1409,9 @@ async function quranPlayPos(pos) {
   } catch (e) {
     if (session !== quranPlaySession) return;
     if (el._itqan.local) QuranAudioStore.forget(el._itqan.folder, step.surah, step.ayah); // file vanished
+    // a stream that won't load may simply mean "no internet" — check for real
+    if (!el._itqan.local && typeof Net !== "undefined") await Net.probeNow();
+    if (session !== quranPlaySession) return;
     if (!QuranAudioStore.isOnline()) { quranShowOfflineAudioMessage(); return; }
     quranRangeFailures += 1;
     if (quranRangeFailures >= 3) {
@@ -1346,6 +1440,7 @@ function quranShowOfflineAudioMessage() {
   const session = quranPlaySession;
   quranRangeStop({ keepPlayer: true });
   quranShowMiniPlayer(true);
+  quranSetPlayerOpen(true);
   quranListenNowPlaying.textContent = "📴 أنت غير متصل بالإنترنت — الاستماع يحتاج اتصالًا، أو حمّل التلاوة مسبقًا (⋮ ← 📥).";
   setTimeout(() => {
     if (session + 1 === quranPlaySession && !quranRangeQueue.length) quranShowMiniPlayer(false);
@@ -1438,6 +1533,15 @@ async function quranAyahsFor(scope) {
   return [];
 }
 
+// How many ayahs' worth of audio still needs downloading — for a
+// one-file-per-surah reciter that's every ayah of each surah touched.
+async function quranMissingAyahCount(folder, items) {
+  const missing = items.filter((a) => !QuranAudioStore.has(folder, a.surah, a.ayah));
+  if (!QuranAudioStore.isSurahSource(folder)) return missing.length;
+  const cat = await getQuranCatalogMap();
+  return [...new Set(missing.map((a) => a.surah))].reduce((n, sNum) => n + (cat.get(sNum)?.numberOfAyahs || 0), 0);
+}
+
 let quranDlRunning = false;
 let quranDlCancel = false;
 
@@ -1445,9 +1549,12 @@ async function renderQuranDownloads() {
   const r = quranCurrentReciter();
   document.getElementById("dlReciterName").textContent = r.name;
   const n = QuranAudioStore.count(r.folder);
-  document.getElementById("dlSummary").textContent = n
-    ? `محمّل على هذا الجهاز: ${toArabicDigits(n)} من ٦٢٣٦ آية (≈ ${quranFormatMB(QuranAudioStore.estimateMB(r.folder, n))}).`
-    : "لم تُحمَّل أي آية بصوت هذا القارئ بعد.";
+  const bySurah = QuranAudioStore.isSurahSource(r.folder); // counted in whole surahs
+  document.getElementById("dlSummary").textContent = !n
+    ? "لم يُحمَّل شيء بصوت هذا القارئ بعد."
+    : bySurah
+      ? `محمّل على هذا الجهاز: ${toArabicDigits(n)} من ١١٤ سورة.`
+      : `محمّل على هذا الجهاز: ${toArabicDigits(n)} من ٦٢٣٦ آية (≈ ${quranFormatMB(QuranAudioStore.estimateMB(r.folder, n))}).`;
   document.getElementById("dlDeleteBtn").style.display = n ? "" : "none";
   const msg = document.getElementById("dlMessage");
   if (!QuranAudioStore.canDownload()) {
@@ -1457,7 +1564,7 @@ async function renderQuranDownloads() {
   }
   for (const btn of document.querySelectorAll("#dlChoices [data-dl]")) {
     const items = await quranAyahsFor(btn.dataset.dl).catch(() => []);
-    const missing = items.filter((a) => !QuranAudioStore.has(r.folder, a.surah, a.ayah)).length;
+    const missing = await quranMissingAyahCount(r.folder, items);
     const size = btn.querySelector(".dl-size");
     btn.classList.toggle("done", items.length > 0 && missing === 0);
     size.textContent = !items.length ? "" : missing === 0 ? "✓ محمّلة" : `≈ ${quranFormatMB(QuranAudioStore.estimateMB(r.folder, missing))}`;
@@ -1469,10 +1576,6 @@ async function renderQuranDownloads() {
 // 📥 dialog (opened if needed).
 async function quranDownloadAyahs(items, label) {
   if (quranDlRunning) return;
-  if (!QuranAudioStore.isOnline()) {
-    document.getElementById("dlMessage").textContent = "📴 أنت غير متصل بالإنترنت — التحميل يحتاج اتصالًا.";
-    return;
-  }
   const r = quranCurrentReciter();
   quranDlRunning = true;
   quranDlCancel = false;
@@ -1510,7 +1613,7 @@ document.querySelectorAll("#dlChoices [data-dl]").forEach((btn) => {
     const items = await quranAyahsFor(scope);
     if (scope === "all") {
       const r = quranCurrentReciter();
-      const missing = items.filter((a) => !QuranAudioStore.has(r.folder, a.surah, a.ayah)).length;
+      const missing = await quranMissingAyahCount(r.folder, items);
       if (!confirm(`تحميل المصحف كاملًا بصوت ${r.name}: حوالي ${quranFormatMB(QuranAudioStore.estimateMB(r.folder, missing))}. يُفضَّل استخدام شبكة Wi-Fi. هل تريد المتابعة؟`)) return;
     }
     quranDownloadAyahs(items, QURAN_DL_LABELS[scope]);
@@ -1529,14 +1632,18 @@ document.getElementById("dlDeleteBtn").addEventListener("click", async () => {
   renderQuranDownloads();
 });
 
-// While listening online, offer once (per surah, per visit) to keep the
-// surah for offline — never more than that, and never again after
-// «لا تسألني مجددًا».
-const QURAN_DL_NEVER_KEY = "qf_audio_offer_never";
+// While listening online, offer (once per surah per visit) to keep the
+// surah for offline. «لاحقًا» doesn't say no for good — it just waits:
+// the same surah + reciter is offered again from the next day.
+const QURAN_DL_SNOOZE_KEY = "qf_audio_offer_snooze"; // { "folder:surah": until-ms }
+const QURAN_DL_SNOOZE_MS = 20 * 60 * 60 * 1000;
+function quranDlSnoozes() {
+  try { return JSON.parse(localStorage.getItem(QURAN_DL_SNOOZE_KEY) || "{}"); } catch (e) { return {}; }
+}
 const quranDlOffered = new Set();
+let quranDlOfferKey = null;
 let quranDlOfferItems = null;
 async function quranMaybeOfferDownload() {
-  try { if (localStorage.getItem(QURAN_DL_NEVER_KEY) === "1") return; } catch (e) { /* ignore */ }
   if (!QuranAudioStore.canDownload() || quranDlRunning || !quranCurrentPos) return;
   const el = quranRangeAudioEl;
   if (!el || el._itqan.local) return; // already playing from the device
@@ -1545,6 +1652,7 @@ async function quranMaybeOfferDownload() {
   const key = `${r.folder}:${step.surah}`;
   if (quranDlOffered.has(key)) return;
   quranDlOffered.add(key);
+  if ((quranDlSnoozes()[key] || 0) > Date.now()) return; // «لاحقًا» was chosen recently
   const all = await fetchLocalAyahIndex().catch(() => []);
   const items = all.filter((a) => a.surah === step.surah);
   const missing = items.filter((a) => !QuranAudioStore.has(r.folder, a.surah, a.ayah));
@@ -1553,6 +1661,7 @@ async function quranMaybeOfferDownload() {
   if (QURAN_MODAL_IDS.some((id) => document.getElementById(id)?.style.display === "flex")) return;
   const name = (await getQuranCatalogMap()).get(step.surah)?.name || "";
   quranDlOfferItems = items;
+  quranDlOfferKey = key;
   document.getElementById("dlOfferText").textContent =
     `هل تريد تحميل ${name} بصوت ${r.name} على هذا الجهاز، لتستمع إليها لاحقًا دون إنترنت؟ الحجم التقريبي ${quranFormatMB(QuranAudioStore.estimateMB(r.folder, missing.length))}.`;
   openQuranModal("quranDownloadOfferModal");
@@ -1562,25 +1671,74 @@ document.getElementById("dlOfferYesBtn").addEventListener("click", () => {
   openQuranModal("quranDownloadsModal");
   if (quranDlOfferItems) quranDownloadAyahs(quranDlOfferItems, "السورة");
 });
-document.getElementById("dlOfferLaterBtn").addEventListener("click", () => closeQuranModal("quranDownloadOfferModal"));
-document.getElementById("dlOfferNeverBtn").addEventListener("click", () => {
-  try { localStorage.setItem(QURAN_DL_NEVER_KEY, "1"); } catch (e) { /* ignore */ }
+document.getElementById("dlOfferLaterBtn").addEventListener("click", () => {
+  if (quranDlOfferKey) {
+    const snoozes = quranDlSnoozes();
+    const now = Date.now();
+    Object.keys(snoozes).forEach((k) => { if (snoozes[k] < now) delete snoozes[k]; }); // tidy old ones
+    snoozes[quranDlOfferKey] = now + QURAN_DL_SNOOZE_MS;
+    try { localStorage.setItem(QURAN_DL_SNOOZE_KEY, JSON.stringify(snoozes)); } catch (e) { /* ignore */ }
+  }
   closeQuranModal("quranDownloadOfferModal");
 });
 
-function quranShowMiniPlayer(show) {
-  quranListenPlayer.style.display = show ? "flex" : "none";
-  document.body.classList.toggle("quran-player-on", !!show); // other tabs leave room for it
-  if (show) {
-    const nav = document.getElementById("bottomNav");
-    quranListenPlayer.style.bottom = ((nav ? nav.offsetHeight : 64) + 8) + "px";
-  }
-  resizeQuranShell(); // the reader makes room for the player (or takes it back)
+// ---- the floating player: open (panel) / closed (🎧 / round button) ----
+const quranPlayerPanel = document.getElementById("quranPlayerPanel");
+let quranPlayerOpen = false;
+let quranPlayerAutoHide = null;
+let quranPlayerOpenedAt = 0; // the tap that opened it (e.g. an ayah's 🔊) must not close it again
+
+function quranPositionPlayer() {
+  const nav = document.getElementById("bottomNav");
+  const navH = nav ? nav.offsetHeight : 64;
+  let bottom = navH + 8;
+  // on 📖, float just above the page-turn row so the controls never cover it
+  const onQuran = document.getElementById("view-quran")?.classList.contains("active");
+  const pageNav = document.querySelector(".quran-page-nav");
+  if (onQuran && pageNav) bottom = Math.max(bottom, window.innerHeight - pageNav.getBoundingClientRect().top + 6);
+  quranPlayerPanel.style.bottom = bottom + "px";
+  document.getElementById("quranPlayerFab").style.bottom = (navH + 12) + "px";
+  quranListenPlayer.classList.toggle("on-quran", !!onQuran);
 }
+
+// open: show the panel; autoHideMs: close again by itself after that long
+function quranSetPlayerOpen(open, autoHideMs) {
+  clearTimeout(quranPlayerAutoHide);
+  if (open && !quranPlayerOpen) quranPlayerOpenedAt = Date.now();
+  quranPlayerOpen = !!open;
+  quranListenPlayer.classList.toggle("open", quranPlayerOpen);
+  if (quranPlayerOpen) quranPositionPlayer();
+  if (quranPlayerOpen && autoHideMs) quranPlayerAutoHide = setTimeout(() => quranSetPlayerOpen(false), autoHideMs);
+  updateQuranAudioButtons();
+}
+
+function quranShowMiniPlayer(show) {
+  quranListenPlayer.style.display = show ? "block" : "none";
+  document.body.classList.toggle("quran-player-on", !!show);
+  if (show) { quranPositionPlayer(); quranSetPlayerOpen(true, 3500); }
+  else quranSetPlayerOpen(false);
+}
+
+document.getElementById("quranPlayerHideBtn").addEventListener("click", () => quranSetPlayerOpen(false));
+document.getElementById("quranPlayerFab").addEventListener("click", () => quranSetPlayerOpen(true, 6000));
+// using the controls keeps it open a little longer
+quranPlayerPanel.addEventListener("click", (e) => {
+  if (e.target.closest("#quranPlayerHideBtn")) return;
+  quranSetPlayerOpen(true, 6000);
+});
+// a tap anywhere else closes it (the page stays fully readable)
+document.addEventListener("click", (e) => {
+  const path = e.composedPath ? e.composedPath() : [e.target];
+  if (!quranPlayerOpen || Date.now() - quranPlayerOpenedAt < 500) return;
+  if (path.includes(quranListenPlayer) || path.some((n) => n.id === "quranPageListenBtn")) return;
+  quranSetPlayerOpen(false);
+});
+window.addEventListener("resize", () => { if (quranPlayerOpen) quranPositionPlayer(); });
 
 function quranRangeFinished() {
   quranRangeStop({ keepPlayer: true });
   quranListenNowPlaying.textContent = "✅ انتهى الاستماع.";
+  quranSetPlayerOpen(true);
   setTimeout(() => {
     if (!quranRangeQueue.length && quranListenNowPlaying.textContent === "✅ انتهى الاستماع.") quranShowMiniPlayer(false);
   }, 2500);
@@ -1763,8 +1921,10 @@ quranListenStopBtn.addEventListener("click", () => quranRangeStop());
 
 // 🎧 next to the page number: recite this page (tap again while this
 // page is playing to stop).
+// 🎧 next to the page number: recite this page. While something is
+// playing it opens / closes the floating player instead (⏹️ is there).
 document.getElementById("quranPageListenBtn").addEventListener("click", () => {
-  if (quranRangeQueue.length > 1 && quranRangeIsCurrentPage) { quranRangeStop(); return; }
+  if (quranRangeQueue.length) { quranSetPlayerOpen(!quranPlayerOpen, quranPlayerOpen ? 0 : 6000); return; }
   quranListenToCurrentPage();
 });
 

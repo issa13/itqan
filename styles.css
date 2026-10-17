@@ -49,6 +49,10 @@
   --danger-rgb: 179, 58, 46;
 
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* the gold line on top of cards (softer in dark mode) */
+  --card-top: var(--gold);
+  --hairline: rgba(var(--gold-rgb), 0.22);
 }
 
 /* -------- Dark mode -------- */
@@ -60,32 +64,38 @@
    #fff surface backgrounds elsewhere were switched to var(--card)/
    var(--card-alt) so they pick this up too. */
 [data-theme="dark"] {
-  --ink: #eae6da;
-  --muted: #a89f8a;
-  --paper: #14180f;
-  --card: #1f261d;
-  --card-alt: #262e21;
+  /* Deep, slightly green-tinted ink instead of the old olive-brown;
+     raised surfaces get lighter (not just shadows), text is a cool
+     off-white, accents are softened so they glow less on black. */
+  --ink: #e7ece8;
+  --muted: #95a49c;
+  --paper: #0f1513;
+  --card: #161f1b;
+  --card-alt: #1c2722;
 
-  --emerald: #1ea87c;
-  --emerald-dark: #12805f;
-  --emerald-light: #29c493;
-  --gold: #d9ad55;
-  --gold-light: #ecc47d;
-  --accent-text: #6fe0b8;
+  --emerald: #2bb58a;
+  --emerald-dark: #17805f;
+  --emerald-light: #3cc79c;
+  --gold: #c9a45c;
+  --gold-light: #dcbb78;
+  --accent-text: #86dcbc;
 
-  --success: #33b287;
-  --success-bg: #16301f;
-  --danger: #e2695a;
-  --danger-bg: #3a1e1a;
+  --success: #3cc28f;
+  --success-bg: #14291f;
+  --danger: #ef7d6d;
+  --danger-bg: #351c18;
 
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 18px 40px -12px rgba(0, 0, 0, 0.55);
-  --shadow-pop: 0 24px 60px -16px rgba(0, 0, 0, 0.65);
+  --card-top: rgba(201, 164, 92, 0.55);
+  --hairline: rgba(255, 255, 255, 0.06);
 
-  --ink-rgb: 234, 230, 218;
-  --gold-rgb: 217, 173, 85;
-  --emerald-rgb: 30, 168, 124;
-  --success-rgb: 51, 178, 135;
-  --danger-rgb: 226, 105, 90;
+  --shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.04), 0 14px 32px -14px rgba(0, 0, 0, 0.7);
+  --shadow-pop: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 24px 60px -16px rgba(0, 0, 0, 0.8);
+
+  --ink-rgb: 231, 236, 232;
+  --gold-rgb: 201, 164, 92;
+  --emerald-rgb: 43, 181, 138;
+  --success-rgb: 60, 194, 143;
+  --danger-rgb: 239, 125, 109;
 }
 
 body, .btn, .mcq-choice, select, input, .modal, .panel {
@@ -106,26 +116,32 @@ body {
   font-family: 'Tajawal', system-ui, -apple-system, "Segoe UI", Tahoma, Arial, sans-serif;
   color: var(--ink);
   background:
-    radial-gradient(circle at 15% 8%, rgba(var(--gold-rgb), 0.10), transparent 40%),
-    radial-gradient(circle at 85% 92%, rgba(var(--emerald-rgb), 0.12), transparent 45%),
-    var(--paper);
+    radial-gradient(120% 60% at 100% 0%, rgba(var(--gold-rgb), 0.13), transparent 55%),
+    radial-gradient(90% 55% at 0% 100%, rgba(var(--emerald-rgb), 0.11), transparent 60%),
+    linear-gradient(180deg, var(--paper), color-mix(in srgb, var(--paper) 92%, #000 8%));
   background-attachment: fixed;
   min-height: 100vh;
 }
 
-/* subtle repeating geometric texture, manuscript-margin inspired */
+/* Background: soft light "glows" over the page colour, plus a faint
+   eight-pointed-star lattice (khātam) that fades out towards the middle —
+   calm, modern, and quietly Islamic-geometric instead of a checkerboard. */
 body::before {
   content: "";
   position: fixed;
   inset: 0;
   pointer-events: none;
-  opacity: 0.05;
-  background-image:
-    linear-gradient(45deg, var(--emerald) 25%, transparent 25%, transparent 75%, var(--emerald) 75%, var(--emerald)),
-    linear-gradient(45deg, var(--emerald) 25%, transparent 25%, transparent 75%, var(--emerald) 75%, var(--emerald));
-  background-size: 34px 34px;
-  background-position: 0 0, 17px 17px;
   z-index: 0;
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2296%22%20height%3D%2296%22%20viewBox%3D%220%200%2096%2096%22%3E%3Cg%20fill%3D%22none%22%20stroke%3D%22%230e6b4f%22%20stroke-width%3D%221%22%3E%3Crect%20x%3D%2230%22%20y%3D%2230%22%20width%3D%2236%22%20height%3D%2236%22%2F%3E%3Crect%20x%3D%2230%22%20y%3D%2230%22%20width%3D%2236%22%20height%3D%2236%22%20transform%3D%22rotate%2845%2048%2048%29%22%2F%3E%3Ccircle%20cx%3D%2248%22%20cy%3D%2248%22%20r%3D%229%22%2F%3E%3Cpath%20d%3D%22M0%2048h12M84%2048h12M48%200v12M48%2084v12%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E");
+  background-size: 96px 96px;
+  background-position: center top;
+  opacity: 0.11;
+  -webkit-mask-image: radial-gradient(150% 95% at 50% 0%, #000 0%, rgba(0,0,0,0.55) 45%, rgba(0,0,0,0.22) 100%);
+          mask-image: radial-gradient(150% 95% at 50% 0%, #000 0%, rgba(0,0,0,0.55) 45%, rgba(0,0,0,0.22) 100%);
+}
+[data-theme="dark"] body::before {
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2296%22%20height%3D%2296%22%20viewBox%3D%220%200%2096%2096%22%3E%3Cg%20fill%3D%22none%22%20stroke%3D%22%2386dcbc%22%20stroke-width%3D%221%22%3E%3Crect%20x%3D%2230%22%20y%3D%2230%22%20width%3D%2236%22%20height%3D%2236%22%2F%3E%3Crect%20x%3D%2230%22%20y%3D%2230%22%20width%3D%2236%22%20height%3D%2236%22%20transform%3D%22rotate%2845%2048%2048%29%22%2F%3E%3Ccircle%20cx%3D%2248%22%20cy%3D%2248%22%20r%3D%229%22%2F%3E%3Cpath%20d%3D%22M0%2048h12M84%2048h12M48%200v12M48%2084v12%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E");
+  opacity: 0.075;
 }
 
 .wrap {
@@ -174,7 +190,7 @@ body::before {
   background: var(--card);
   border-radius: var(--radius-lg);
   border: 1px solid rgba(var(--gold-rgb), 0.22);
-  border-top: 3px solid var(--gold);
+  border-top: 3px solid var(--card-top);
   box-shadow: var(--shadow-card);
   padding: 18px;
 }
@@ -397,7 +413,7 @@ body::before {
   background: var(--card);
   border-radius: var(--radius-lg);
   border: 1px solid rgba(var(--gold-rgb), 0.22);
-  border-top: 3px solid var(--gold);
+  border-top: 3px solid var(--card-top);
   box-shadow: var(--shadow-card);
   padding: 18px;
 }
@@ -970,7 +986,7 @@ select:focus, input:focus {
   background: var(--card);
   border-radius: var(--radius-lg);
   border: 1px solid rgba(var(--gold-rgb), 0.25);
-  border-top: 3px solid var(--gold);
+  border-top: 3px solid var(--card-top);
   box-shadow: var(--shadow-pop);
   padding: 20px;
   animation: modalIn 0.25s var(--ease);
@@ -2117,7 +2133,7 @@ select:focus, input:focus {
   background: var(--card);
   border-radius: var(--radius-lg);
   border: 1px solid rgba(var(--gold-rgb), 0.22);
-  border-top: 3px solid var(--gold);
+  border-top: 3px solid var(--card-top);
   box-shadow: var(--shadow-card);
   padding: 16px;
   display: flex;
@@ -2630,3 +2646,106 @@ html.is-offline .offline-notice {
 }
 #authModal .offline-notice { width: 100%; margin-bottom: 10px; }
 html.is-offline [data-needs-online="hide"] > :not(.offline-notice) { display: none !important; }
+
+/* 📴 top-bar chip: no internet / answers waiting to sync */
+.net-chip {
+  order: 3;
+  border: 1px solid rgba(var(--gold-rgb), 0.5);
+  background: rgba(var(--gold-rgb), 0.16);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 800;
+  padding: 5px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.net-chip.syncing { border-color: rgba(var(--emerald-rgb), 0.45); background: var(--success-bg); color: var(--accent-text); }
+
+/* page-turn buttons: icon only, a comfortable round target */
+.quran-page-nav .quran-turn-btn { width: 46px; height: 38px; padding: 0; font-size: 15px; line-height: 1; flex-shrink: 0; }
+
+/* -------- floating recitation player --------
+   Floats over the page (no height taken from the Mushaf). .open shows the
+   panel; closed, the 🎧 by the page number (📖 tab) or a round button
+   (other tabs) shows that something is playing and reopens it. */
+.quran-player { position: fixed; left: 0; right: 0; bottom: 0; height: 0; z-index: 39; }
+.quran-player .quran-mini-player {
+  bottom: auto;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(14px) scale(0.98);
+  transition: opacity 0.2s var(--ease), transform 0.2s var(--ease);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--card) 92%, transparent);
+}
+.quran-player.open .quran-mini-player { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0) scale(1); }
+.quran-mini-controls .quran-player-hide { padding: 6px 10px; font-size: 16px; }
+
+.quran-player-fab {
+  position: fixed;
+  inset-inline-end: 14px;
+  width: 48px; height: 48px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(var(--emerald-rgb), 0.45);
+  background: var(--card);
+  box-shadow: var(--shadow-pop);
+  display: none;
+  align-items: center; justify-content: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.quran-player:not(.open):not(.on-quran) .quran-player-fab { display: flex; }
+
+/* the little "playing" equalizer, used in the round button and on 🎧 */
+.eq { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; }
+.eq i { width: 3px; height: 100%; border-radius: 2px; background: var(--emerald); animation: eqBar 0.9s ease-in-out infinite; }
+.eq i:nth-child(2) { animation-delay: -0.3s; }
+.eq i:nth-child(3) { animation-delay: -0.6s; }
+@keyframes eqBar { 0%, 100% { transform: scaleY(0.35); } 50% { transform: scaleY(1); } }
+.eq i { transform-origin: bottom; }
+.quran-page-listen.playing { min-width: 44px; display: inline-flex; align-items: center; justify-content: center; }
+
+/* other tabs only need room for the small round button */
+body.quran-player-on .wrap:not(.reading-quran) { padding-bottom: calc(110px + env(safe-area-inset-bottom, 0px)); }
+
+/* -------- dark mode refinements -------- */
+[data-theme="dark"] body {
+  background:
+    radial-gradient(120% 55% at 50% -10%, rgba(43, 181, 138, 0.13), transparent 60%),
+    radial-gradient(80% 50% at 100% 100%, rgba(201, 164, 92, 0.06), transparent 60%),
+    linear-gradient(180deg, #111916, #0b100e);
+}
+/* inputs and dropdowns sit slightly below the card instead of being a
+   bright outline on black */
+[data-theme="dark"] select,
+[data-theme="dark"] input[type="text"],
+[data-theme="dark"] input[type="email"],
+[data-theme="dark"] input[type="password"],
+[data-theme="dark"] input[type="number"] {
+  background-color: #111915;
+  border-color: rgba(255, 255, 255, 0.09);
+  color: var(--ink);
+}
+[data-theme="dark"] .bottom-nav {
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-top-color: var(--hairline);
+}
+[data-theme="dark"] .mcq-choice { border-color: rgba(255, 255, 255, 0.08); }
+[data-theme="dark"] .modal-overlay { background: rgba(0, 0, 0, 0.6); }
+[data-theme="dark"] .level-badge { filter: saturate(0.85) brightness(0.95); }
+
+/* toasts: wide enough to read in one or two lines */
+.info-toast {
+  width: max-content;
+  max-width: min(90vw, 420px);
+  border-radius: 16px;
+  text-align: center;
+  line-height: 1.7;
+  font-size: 13px;
+  font-weight: 700;
+}
