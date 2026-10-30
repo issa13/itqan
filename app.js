@@ -448,6 +448,23 @@ function getActiveRange() {
 // -------- generation gating --------
 const ADJACENT_TYPES = new Set(["nextPageFirst", "prevPageFirst", "pageEndToNextFirst", "pageStartToPrevLast"]);
 
+// "يمين / يسار": is the ayah on a right-hand page (odd number) or a
+// left-hand page (even number) of the Mushaf? Always exactly these two
+// choices, always in this order — in the RTL layout the first one sits
+// on the right, so «يمين» is literally on the right side of the card.
+const RIGHT_LEFT_TYPE = "rightLeft";
+const SIDE_RIGHT = "يمين";
+const SIDE_LEFT = "يسار";
+function pageSide(page) { return page % 2 === 1 ? SIDE_RIGHT : SIDE_LEFT; }
+function isRightLeftChoices(choices) {
+  return Array.isArray(choices) && choices.length === 2 && choices[0] === SIDE_RIGHT && choices[1] === SIDE_LEFT;
+}
+// Lays the two side choices out next to each other (right | left)
+// instead of stacked — shared by every mode's choice renderer.
+function applyChoiceLayout(container, choices) {
+  if (container) container.classList.toggle("two-sides", isRightLeftChoices(choices));
+}
+
 function rangeTooNarrowMessage(typeLabel, count, singularUnit, pluralUnit, required = MIN_MCQ_ANSWERS) {
   const countText = count === 1 ? `${singularUnit} واحدة فقط` : `${count} ${pluralUnit} فقط`;
   return `النطاق المحدد يغطي ${countText}، ويلزم ${required} على الأقل لإنشاء سؤال "${typeLabel}". وسّع نطاق الصفحات أو اختر نوع سؤال آخر.`;
@@ -457,6 +474,9 @@ function rangeTooNarrowMessage(typeLabel, count, singularUnit, pluralUnit, requi
 // right now?" check. Returns a message to show when blocked, or null
 // when it's fine to proceed.
 async function checkGenerationBlock(type, minP, maxP) {
+  if (type === RIGHT_LEFT_TYPE && maxP <= minP) {
+    return "يلزم نطاق من صفحتين على الأقل لسؤال «يمين / يسار» (وإلا كان الجواب نفسه دائمًا). وسّع نطاق الصفحات أو اختر نوع سؤال آخر.";
+  }
   if (ADJACENT_TYPES.has(type) && maxP <= minP) {
     return "يلزم نطاق يشمل أكثر من صفحة واحدة لإنشاء هذا النوع من الأسئلة. وسّع نطاق الصفحات أو اختر نوع سؤال آخر.";
   }
@@ -610,6 +630,7 @@ async function refreshQuestionTypeAvailability() {
 
   const multiPage = maxP > minP;
   ADJACENT_TYPES.forEach((t) => setOptionAvailability(t, multiPage));
+  setOptionAvailability(RIGHT_LEFT_TYPE, multiPage);
 
   const selectedOption = qTypeSelect.querySelector(`option[value="${qTypeSelect.value}"]`);
   if (selectedOption && selectedOption.disabled) {
@@ -690,6 +711,7 @@ async function fetchPageAyahs(page) {
       numberInSurah: a.ayah,
       juz,
       page,
+      endPage: a.endPage || a.page,
       surah: { number: a.surah, name: a.surahName },
     }));
 
@@ -896,6 +918,7 @@ function getTypeDescription(type) {
     case "juz": return "سيظهر لك آية، والمطلوب أن تحدد رقم الجزء الذي تنتمي إليه.";
     case "ayahNumber": return "سيظهر لك آية، والمطلوب أن تخمّن رقمها داخل سورتها.";
     case "listenNext": return "استمع إلى تلاوة الآية (لن يظهر نصها)، ثم اختر الآية التي تليها مباشرة في نفس الصفحة. لن تتمكن من الإجابة قبل الاستماع.";
+    case "rightLeft": return "سيظهر لك آية، والمطلوب أن تحدد: هل هي في الصفحة اليمنى (رقم فردي) أم في الصفحة اليسرى (رقم زوجي) من المصحف؟";
     default: return "اختر نوع السؤال ثم اضغط سؤال جديد.";
   }
 }
@@ -916,6 +939,7 @@ function getTypeLabel(type) {
     case "juz": return "خمن الجزء";
     case "ayahNumber": return "خمن رقم الآية بالسورة";
     case "listenNext": return "🎧 استمع ثم خمن الآية التالية";
+    case "rightLeft": return "يمين / يسار";
     default: return "—";
   }
 }
@@ -997,6 +1021,17 @@ function pickQAFromPage(ayahs, type, page, forcedIdx) {
     const num = candidate.numberInSurah;
     if (num == null) return null;
     return { q: clean(candidate.text), a: String(num), kind: "ayahNumber", qAyahNumber: candidate.number };
+  }
+
+  if (type === RIGHT_LEFT_TYPE) {
+    // Only ayahs that start AND end on this page: one that continues
+    // onto the next page sits on both sides, so it has no single answer.
+    const whole = [];
+    ayahs.forEach((a, i) => { if ((a.endPage || page) === page) whole.push(i); });
+    if (!whole.length) return null;
+    const idx = (Number.isInteger(forcedIdx) && whole.includes(forcedIdx)) ? forcedIdx : whole[randInt(0, whole.length - 1)];
+    const candidate = ayahs[idx];
+    return { q: clean(candidate.text), a: pageSide(page), kind: "rightLeft", qAyahNumber: candidate.number };
   }
 
   if (type === "listenNext") {
@@ -1146,6 +1181,12 @@ async function buildChoices(qa, minP, maxP) {
   const want = MCQ_CHOICE_COUNT - 1;
   let distractors = [];
 
+  if (qa.kind === "rightLeft") {
+    // Fixed pair, fixed order (see RIGHT_LEFT_TYPE) — never shuffled.
+    const choices = [SIDE_RIGHT, SIDE_LEFT];
+    return { choices, correctIndex: choices.indexOf(correct) };
+  }
+
   if (qa.kind === "surah") {
     // Strictly from within the selected range — generateCard() already
     // refuses to reach here with fewer than MIN_MCQ_ANSWERS available.
@@ -1226,10 +1267,15 @@ async function buildQuestionPool(type, minP, maxP) {
   const all = await fetchLocalAyahIndex();
 
   const refsByPage = new Map();
+  const spillsByPage = new Map(); // page -> Set of indexes of ayahs that continue onto the next page
   for (const a of all) {
     if (a.page < minP || a.page > maxP) continue;
     let list = refsByPage.get(a.page);
     if (!list) { list = []; refsByPage.set(a.page, list); }
+    if (a.endPage && a.endPage !== a.page) {
+      if (!spillsByPage.has(a.page)) spillsByPage.set(a.page, new Set());
+      spillsByPage.get(a.page).add(list.length);
+    }
     list.push(`${a.surah}:${a.ayah}`);
   }
 
@@ -1264,6 +1310,11 @@ async function buildQuestionPool(type, minP, maxP) {
         idxs = [0]; break;
       case "pageEndToNextFirst":
         idxs = [n - 1]; break;
+      case RIGHT_LEFT_TYPE: {
+        const spills = spillsByPage.get(page);
+        idxs = indexRange(0, n - 1).filter((i) => !(spills && spills.has(i)));
+        break;
+      }
       default: // surah, pageNumber, juz, ayahNumber
         idxs = indexRange(0, n - 1);
     }
@@ -1380,6 +1431,7 @@ async function generateQuestionForTests(type, minP, maxP) {
 // -------- MCQ rendering & interaction --------
 function renderChoices(choices, locked) {
   mcqChoicesEl.innerHTML = "";
+  applyChoiceLayout(mcqChoicesEl, choices);
   choices.forEach((choiceText, idx) => {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -1458,6 +1510,7 @@ function finishQuestion(isCorrect) {
   setTimeout(() => flashcard.classList.remove(flashClass), 700);
 
   saveGuestScore();
+  if (typeof ItqanNotify !== "undefined") ItqanNotify.markActivity(); // today counts as practised (⏰ reminders)
 
   if (typeof recordAttempt === "function" && currentQuestionType) {
     // Read from the browser's own clock (not UTC) so the
@@ -1582,9 +1635,12 @@ async function generateCard() {
     audioGateTimerPending = isAudioOnly;
     if (!isAudioOnly) startTimer();
   } catch (err) {
-    setCardText(qText, "خطأ في الشبكة أو في الـ API.");
+    // Questions are built from local files (quran-index/), not the
+    // internet — so say what actually failed instead of blaming the network.
+    console.error("generateCard failed", err);
+    setCardText(qText, "تعذّر إنشاء السؤال.");
     mcqChoicesEl.innerHTML = "";
-    setStatus("فشل التحميل. تأكد من الإنترنت وحاول مجددًا.");
+    setStatus("حدث خطأ أثناء تحميل بيانات القرآن. أعد تحميل الصفحة وحاول مجددًا.");
     unlockGenerate();
   }
 }
@@ -1603,7 +1659,7 @@ async function generateCard() {
 const CHALLENGE_TYPES = [
   "first", "last", "previous", "next", "surah", "pageNumber", "ayahCount",
   "nextPageFirst", "prevPageFirst", "pageEndToNextFirst", "pageStartToPrevLast",
-  "juz", "ayahNumber", "listenNext",
+  "juz", "ayahNumber", "listenNext", "rightLeft",
 ];
 const CHALLENGE_MIN_TYPES = 3;
 const CHALLENGE_MIN_PLAYERS = 2;
@@ -1767,7 +1823,7 @@ function getSelectedChallengeTypes() {
 // underlying range-coverage checks (ADJACENT_TYPES/juzsInRange/
 // surahsInRange/MIN_MCQ_ANSWERS) without that coupling.
 async function challengeTypeBlockMessage(type, minP, maxP) {
-  if (ADJACENT_TYPES.has(type) && maxP <= minP) {
+  if ((ADJACENT_TYPES.has(type) || type === RIGHT_LEFT_TYPE) && maxP <= minP) {
     return "يلزم نطاق يشمل أكثر من صفحة واحدة لهذا النوع.";
   }
   if (type === "juz") {
@@ -1889,6 +1945,7 @@ challengeStartBtn.addEventListener("click", async () => {
 // -------- play (buzzer) --------
 function renderChallengeChoices(choices) {
   challengeMcqChoices.innerHTML = "";
+  applyChoiceLayout(challengeMcqChoices, choices);
   choices.forEach((choiceText) => {
     const div = document.createElement("div");
     div.className = "mcq-choice locked";
@@ -3106,6 +3163,7 @@ function revealDuelQuestionCard(q) {
 // skips listening.
 function renderDuelChoices(choices, locked) {
   duelMcqChoices.innerHTML = "";
+  applyChoiceLayout(duelMcqChoices, choices);
   choices.forEach((choiceText, idx) => {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -3153,6 +3211,7 @@ async function submitMyDuelAnswer(choiceIndex) {
   lockDuelChoices();
 
   const questionIndex = duelCurrentQuestion.question_index;
+  if (typeof ItqanNotify !== "undefined") ItqanNotify.markActivity();
   const result = await submitDuelAnswer(duelId, questionIndex, choiceIndex);
 
   if (!result || !result.ok) {
@@ -3799,6 +3858,7 @@ function updateSelfScoreBox() {
 
 function renderSelfChoices(choices) {
   selfMcqChoices.innerHTML = "";
+  applyChoiceLayout(selfMcqChoices, choices);
   choices.forEach((choiceText, idx) => {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -4045,6 +4105,7 @@ async function proceedToSelfQuestion() {
 }
 
 function finishSelfQuestion(isCorrect) {
+  if (typeof ItqanNotify !== "undefined") ItqanNotify.markActivity();
   if (selfAnswered) return;
   selfAnswered = true;
 

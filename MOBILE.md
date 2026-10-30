@@ -29,6 +29,8 @@ The app is **your website inside an app shell**. A free tool called **Capacitor*
 | 📖 Quran, search, bookmarks, quizzes, 📱 محلي challenges | Work **with no internet at all** — even the very first time, because all files are inside the app. |
 | 🎧 Recitation, accounts, 🌐 duels, friends, leaderboard | Need internet, same as the website. |
 | Android **back button** | Closes the ⋮ menu or an open dialog first; from any other tab it goes to the 📖 القرآن (Mushaf) tab; on the Mushaf tab it closes the app. |
+| 🎧 Recitation in the background | Keeps playing when you switch to another app or lock the phone. Android shows a «🎧 …» notification while it plays (with ⏸ / ⏹ buttons) — that notification is what lets Android keep the app running. iPhone: lock-screen controls. |
+| ⏰ Reminders | 👤 → ⚙️ → ⏰: daily wird, evening review (only on days you didn't practise), سورة الكهف on Friday. Scheduled on the phone itself, so they arrive even when the app is closed. Not available on the website. |
 | Status bar (clock, battery) & navigation bar | Their background follows the app's light/dark theme and their icons stay readable. |
 | Notch / navigation bar | Content never hides behind them. On Android the page sits between the two bars (no gaps, scrolls to the very end); on iPhone it uses the notch / home-bar sizes. |
 | Icon & splash screen | Green/gold 8-pointed star with an open Mushaf (`mobile/assets/` — replace if you like, see part 6). The website uses the same icon (`icons/`). |
@@ -152,7 +154,8 @@ You'll also need a short **privacy policy page** (what data you store: email, di
      | `ANDROID_KEY_PASSWORD` | the key password |
      From then on each run also produces **itqan-android-play-store** (the `.aab`).
 4. In Play Console: *Create app* → fill the store listing (name, description, screenshots, icon — `mobile/assets/icon-only.png`), the *Data safety* form and the privacy policy link → upload the `.aab` to a testing track.
-5. **Version numbers:** each upload needs a bigger "version code". GitHub builds use the run number automatically; for Android Studio builds raise `versionCode` in `mobile/android/app/build.gradle` by 1 each time.
+5. **Background recitation declaration:** the app uses a *media playback* foreground service (to keep the recitation playing in the background). Play Console → *App content* → **Foreground service permissions** asks you to confirm this: choose **Media playback**, describe it as "Plays Quran recitation chosen by the user while the app is in the background", and add a short screen recording (start a recitation → press Home → the notification and sound continue).
+6. **Version numbers:** each upload needs a bigger "version code". GitHub builds use the run number automatically; for Android Studio builds raise `versionCode` in `mobile/android/app/build.gradle` by 1 each time.
 
 > The test APK from part 3 and the Play Store version are signed differently, so uninstall the test version before installing from Google Play (guest progress on that phone would be lost; signed-in progress is safe in your account).
 
@@ -212,8 +215,9 @@ So the email links from the app are accepted: Supabase dashboard → **Authentic
 | `native/native-app.js` | App-only behaviour: back button, status/navigation-bar colours, keeping the page between the Android bars, splash screen, email-link address. |
 | `native/native-app.css` | App-only styling: safe-area spacing (0 on Android), no page "bounce" on iPhone, no grey flash when tapping buttons. |
 | `android/app/src/main/java/…/ItqanWindowPlugin.java` | A tiny Android plugin that colours the strips behind the status/navigation bars to match the theme. |
+| `android/app/src/main/java/…/ItqanAudioPlugin.java`, `ItqanAudioService.java` | Background recitation on Android: the «🎧 …» notification (a *media playback* foreground service) that keeps the app running while the recitation plays, with ⏸ / ⏹ buttons. |
 | `assets/` | Source pictures for the icon and splash screen. |
 | `android/` | The Android Studio project. Signing setup is in `android/app/build.gradle`; `android/keystore.properties.example` shows the file to create for local release builds. |
-| `ios/` | The Xcode project (uses Swift Package Manager — no CocoaPods needed). Background audio is enabled in `ios/App/App/Info.plist`. |
+| `ios/` | The Xcode project (uses Swift Package Manager — no CocoaPods needed). Background audio is enabled in `ios/App/App/Info.plist`; `AppDelegate.swift` sets the audio session to "playback" so the recitation continues when the phone is locked. |
 | `www/`, `node_modules/` | Generated — not uploaded to GitHub (`.gitignore`). |
 | `../.github/workflows/android-app.yml` | The automatic Android build on GitHub. |

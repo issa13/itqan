@@ -1270,20 +1270,26 @@ let quranHandoffTimer = null;
 let quranHandingOff = false;
 let quranPlaySession = 0;          // bumps on stop/restart — stale async work checks it
 
+function quranHandoffTick() {
+  const el = quranRangeAudioEl;
+  if (!el || quranRangePaused || quranHandingOff || el.paused) return;
+  const clip = el._itqan && el._itqan.clip;
+  if (clip) {
+    if (el.currentTime >= clip.end - 0.03) quranClipBoundary(el);
+    return;
+  }
+  const d = el.duration;
+  if (!isFinite(d) || d <= 0) return;
+  if ((d - el.currentTime) / (el.playbackRate || 1) <= QURAN_GAPLESS_LEAD_S) quranAdvanceFrom(el, false);
+}
+// The 40ms timer gives the precise hand-over while the app is on screen.
+// In the background (phone locked / another app) browsers slow timers
+// down to about once a second or less, so each element's own
+// "timeupdate" event (still delivered ~4× a second while it plays)
+// drives the same check — see quranPlayPos().
 function quranStartHandoffWatch() {
   if (quranHandoffTimer) return;
-  quranHandoffTimer = setInterval(() => {
-    const el = quranRangeAudioEl;
-    if (!el || quranRangePaused || quranHandingOff || el.paused) return;
-    const clip = el._itqan && el._itqan.clip;
-    if (clip) {
-      if (el.currentTime >= clip.end - 0.03) quranClipBoundary(el);
-      return;
-    }
-    const d = el.duration;
-    if (!isFinite(d) || d <= 0) return;
-    if ((d - el.currentTime) / (el.playbackRate || 1) <= QURAN_GAPLESS_LEAD_S) quranAdvanceFrom(el, false);
-  }, 40);
+  quranHandoffTimer = setInterval(quranHandoffTick, 40);
 }
 function quranStopHandoffWatch() {
   if (quranHandoffTimer) { clearInterval(quranHandoffTimer); quranHandoffTimer = null; }
@@ -1390,6 +1396,7 @@ async function quranPlayPos(pos) {
     if (el === quranRangeAudioEl) quranAdvanceFrom(el, true);
     else { quranRangeTailEls.delete(el); quranDisposeAudio(el); }
   };
+  if (!el._itqanTick) { el._itqanTick = true; el.addEventListener("timeupdate", quranHandoffTick); }
   if (previous && previous !== el) {
     // let the previous ayah finish its last few milliseconds by itself
     quranRangeTailEls.add(previous);
@@ -1915,6 +1922,7 @@ quranListenPauseBtn.addEventListener("click", () => {
     quranListenPauseBtn.textContent = "▶️";
     quranListenPauseBtn.setAttribute("aria-label", "متابعة");
   }
+  quranBroadcastRecitation();
 });
 
 quranListenStopBtn.addEventListener("click", () => quranRangeStop());
@@ -2072,3 +2080,82 @@ if (typeof switchView === "function") {
     try { history.replaceState({ view: known ? initialView : "quran" }, "", "#" + (known ? initialView : "quran")); } catch (e) { /* ignore */ }
   }
 }
+
+// ============================================================
+// 🎧 Recitation outside the app — lock screen, notification, background
+//
+// Whenever the recitation starts / pauses / moves to the next ayah /
+// stops, the page announces it:
+//   • navigator.mediaSession (browsers + iPhone): the title on the lock
+//     screen / notification shade, with ⏯ and ⏹ working from there;
+//   • a window event "itqan:recitation" { state, title, text } — the
+//     phone app (mobile/native/native-app.js) uses it to start Android's
+//     "playing" notification, which keeps the app running in the
+//     background so the recitation doesn't stop when you leave the app.
+// Commands coming back (⏯ / ⏹ from the notification or lock screen)
+// arrive as the window event "itqan:recitation-command" { action }.
+// ============================================================
+let quranBroadcastPending = false;
+let quranLastBroadcastSig = "";
+
+function quranRecitationState() {
+  if (!quranRangeQueue.length) return "stopped";
+  return quranRangePaused ? "paused" : "playing";
+}
+
+function quranBroadcastRecitation() {
+  if (quranBroadcastPending) return;
+  quranBroadcastPending = true;
+  Promise.resolve().then(() => {
+    quranBroadcastPending = false;
+    const state = quranRecitationState();
+    const reciter = QURAN_RECITERS.find((r) => r.id === quranSelectedReciter);
+    const text = (quranListenNowPlaying.textContent || "").replace(/^🎧\s*/, "").trim() || "تلاوة";
+    const title = reciter ? reciter.name : "إتقان";
+    const sig = `${state}|${title}|${text}`;
+    if (sig === quranLastBroadcastSig) return;
+    quranLastBroadcastSig = sig;
+
+    if ("mediaSession" in navigator) {
+      try {
+        if (state === "stopped") {
+          navigator.mediaSession.metadata = null;
+          navigator.mediaSession.playbackState = "none";
+        } else {
+          if (typeof MediaMetadata === "function") {
+            navigator.mediaSession.metadata = new MediaMetadata({
+              title: text, artist: title, album: "إتقان",
+              artwork: [{ src: "icons/icon-512.png", sizes: "512x512", type: "image/png" }],
+            });
+          }
+          navigator.mediaSession.playbackState = state === "playing" ? "playing" : "paused";
+        }
+      } catch (e) { /* not supported here */ }
+    }
+
+    try {
+      window.dispatchEvent(new CustomEvent("itqan:recitation", { detail: { state, title, text } }));
+    } catch (e) { /* ignore */ }
+  });
+}
+
+function quranRecitationCommand(action) {
+  if (!quranRangeQueue.length) return;
+  if (action === "stop") { quranRangeStop(); return; }
+  const wantPlay = action === "play" || (action === "toggle" && quranRangePaused);
+  const wantPause = action === "pause" || (action === "toggle" && !quranRangePaused);
+  if ((wantPlay && quranRangePaused) || (wantPause && !quranRangePaused)) quranListenPauseBtn.click();
+}
+
+window.addEventListener("itqan:recitation-command", (e) => quranRecitationCommand(e.detail && e.detail.action));
+
+if ("mediaSession" in navigator) {
+  const handlers = { play: "play", pause: "pause", stop: "stop" };
+  Object.keys(handlers).forEach((name) => {
+    try { navigator.mediaSession.setActionHandler(name, () => quranRecitationCommand(handlers[name])); } catch (e) { /* unsupported action */ }
+  });
+}
+
+// Every status change (next ayah, loading, finished, errors) goes through
+// this element's text, so watching it catches them all.
+new MutationObserver(quranBroadcastRecitation).observe(quranListenNowPlaying, { childList: true, characterData: true, subtree: true });

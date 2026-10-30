@@ -148,6 +148,39 @@ create policy "Public sessions are visible to everyone"
   on public.sessions for select
   using (is_public = true);
 
+-- The policy above lets the app update its own sessions directly (it
+-- only ever sets is_public, and finished_at when a ذاتي quiz ends). But
+-- through the REST API a user could also re-open a finished leaderboard
+-- session (finished_at back to null) to keep adding answers to it, or
+-- rewrite its page range / question types after the fact. Lock those
+-- fields for app users; record_attempt() (which widens the range) runs
+-- as the table owner and is unaffected.
+create or replace function public.sessions_guard_update()
+returns trigger
+language plpgsql
+as $$
+begin
+  if current_user in ('anon', 'authenticated') then
+    if new.user_id is distinct from old.user_id
+       or new.created_at is distinct from old.created_at
+       or new.range_min is distinct from old.range_min
+       or new.range_max is distinct from old.range_max
+       or new.question_types is distinct from old.question_types
+       or new.count_per_type is distinct from old.count_per_type
+       or (old.finished_at is not null and new.finished_at is distinct from old.finished_at)
+    then
+      raise exception 'session_field_locked';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists sessions_guard_update on public.sessions;
+create trigger sessions_guard_update
+  before update on public.sessions
+  for each row execute function public.sessions_guard_update();
+
 -- 3) User settings: synced across devices (last used config +
 --    which session is currently "active" and receiving attempts)
 create table if not exists public.user_settings (
@@ -288,13 +321,13 @@ declare
   -- "next" answer failed to save. Appended last so sort_order is stable.
   v_types text[] := array['first','last','previous','surah','pageNumber','ayahCount',
                            'nextPageFirst','prevPageFirst','pageEndToNextFirst',
-                           'pageStartToPrevLast','juz','ayahNumber','listenNext','next'];
+                           'pageStartToPrevLast','juz','ayahNumber','listenNext','next','rightLeft'];
   v_labels text[] := array['خمن الآية الأولى بالصفحة','خمن الآية الأخيرة بالصفحة','خمن الآية السابقة',
                             'خمن السورة','خمن رقم الصفحة','خمن عدد آيات الصفحة',
                             'خمن أول آية بالصفحة التالية','خمن أول آية بالصفحة السابقة',
                             'من آخر آية: خمن أول آية بالصفحة التالية','من أول آية: خمن آخر آية بالصفحة السابقة',
                             'خمن الجزء','خمن رقم الآية بالسورة','استمع ثم خمن الآية التالية',
-                            'خمن الآية التالية'];
+                            'خمن الآية التالية','يمين / يسار'];
   i int;
 begin
   for i in 1 .. array_length(v_types, 1) loop
@@ -467,7 +500,7 @@ begin
   if p_question_type is null or p_question_type not in (
     'first', 'last', 'previous', 'next', 'surah', 'pageNumber', 'ayahCount',
     'nextPageFirst', 'prevPageFirst', 'pageEndToNextFirst', 'pageStartToPrevLast',
-    'juz', 'ayahNumber', 'listenNext'
+    'juz', 'ayahNumber', 'listenNext', 'rightLeft'
   ) then
     raise exception 'invalid_question_type';
   end if;
@@ -503,9 +536,12 @@ begin
   from public.user_stats where user_id = v_uid;
 
   if v_last_attempt_at is not null and clock_timestamp() - v_last_attempt_at < interval '350 milliseconds' then
+    -- 'throttled' tells the app this answer was NOT saved, so an answer
+    -- synced from the offline queue is retried instead of silently lost.
     return jsonb_build_object(
       'earned', '[]'::jsonb, 'xp', coalesce(v_xp, 0),
-      'xpGained', 0, 'currentStreak', coalesce(v_old_streak, 0)
+      'xpGained', 0, 'currentStreak', coalesce(v_old_streak, 0),
+      'throttled', true
     );
   end if;
 
@@ -551,7 +587,11 @@ begin
     when coalesce(v_day_streak, 0) >= 3 then 1.25
     else 1
   end;
-  v_base_xp := case when p_is_correct then round(10 * v_xp_mult)::int else 0 end;
+  -- «يمين / يسار» has only 2 choices (a coin flip gets half right), so
+  -- it earns half the base XP of the 6-choice types.
+  v_base_xp := case when p_is_correct
+    then round((case when p_question_type = 'rightLeft' then 5 else 10 end) * v_xp_mult)::int
+    else 0 end;
   v_combo_bonus := case when p_is_correct and v_new_streak > 0 and v_new_streak % 5 = 0 then 15 else 0 end;
   v_xp_gain := v_base_xp + v_combo_bonus;
 
@@ -1485,7 +1525,7 @@ as $$
       where t not in (
         'first', 'last', 'previous', 'next', 'surah', 'pageNumber', 'ayahCount',
         'nextPageFirst', 'prevPageFirst', 'pageEndToNextFirst', 'pageStartToPrevLast',
-        'juz', 'ayahNumber', 'listenNext'
+        'juz', 'ayahNumber', 'listenNext', 'rightLeft'
       )
     )
     -- no duplicates (they'd double that type's share of the duel)

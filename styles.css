@@ -936,6 +936,25 @@ select:focus, input:focus {
   color: var(--danger);
 }
 
+/* «يمين / يسار» — two big side-by-side choices; in RTL the first one
+   (يمين) is on the right, the second (يسار) on the left. */
+.mcq-choices.two-sides {
+  flex-direction: row;
+  gap: 12px;
+}
+.mcq-choices.two-sides .mcq-choice {
+  flex: 1 1 0;
+  min-height: 64px;
+  text-align: center;
+  font-size: 20px !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.mcq-choices.two-sides .mcq-choice:first-child::before { content: "➡️"; font-size: 0.9em; }
+.mcq-choices.two-sides .mcq-choice:last-child::after { content: "⬅️"; font-size: 0.9em; }
+
 .status {
   min-height: 18px;
   text-align: center;
@@ -2623,6 +2642,18 @@ details.profile-section > summary:focus-visible { outline: 2px solid var(--gold)
 .settings-row-label { font-size: 13.5px; font-weight: 700; color: var(--ink); line-height: 1.6; }
 .settings-row .btn { flex-shrink: 0; }
 .delete-account-row .settings-row-label { color: var(--danger); font-weight: 600; font-size: 12.5px; }
+
+/* ⏰ reminders — label on top, one row per reminder: toggle + time */
+.settings-row.reminders-block { flex-direction: column; align-items: stretch; }
+.reminder-list { display: flex; flex-direction: column; gap: 8px; }
+.reminder-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.reminder-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink); cursor: pointer; flex: 1; min-width: 0; }
+.reminder-toggle small { color: var(--muted); font-weight: 400; }
+.reminder-toggle input { width: 18px; height: 18px; accent-color: var(--emerald); flex-shrink: 0; }
+.reminder-time { width: auto; min-width: 104px; padding: 6px 8px; font-size: 13px; direction: ltr; }
+.reminder-time:disabled { opacity: 0.45; }
+.native-only-inline { display: none; }
+html.native-app .native-only-inline { display: inline; }
 
 /* -------- offline: say so instead of showing empty / stuck screens --------
    html.is-offline is toggled in auth-ui.js from the browser's online /

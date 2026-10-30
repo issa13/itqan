@@ -54,13 +54,14 @@ interface Ayah {
   numberInSurah: number;
   text: string;
   juz: number;
+  endPage: number;
   surah: { number: number; name: string };
 }
 
 interface QA {
   q: string;
   a: string;
-  kind: "text" | "firstAyah" | "lastAyah" | "surah" | "pageNumber" | "ayahCount" | "juz" | "ayahNumber";
+  kind: "text" | "firstAyah" | "lastAyah" | "surah" | "pageNumber" | "ayahCount" | "juz" | "ayahNumber" | "rightLeft";
   qAyahNumber: string | null;
   audioOnly?: boolean;
   sourcePage?: number;
@@ -166,6 +167,7 @@ async function fetchPageAyahs(page: number): Promise<Ayah[]> {
       numberInSurah: a.ayah,
       text: a.text,
       juz,
+      endPage: a.endPage || a.page,
       surah: { number: a.surah, name: a.surahName },
     }));
   pageCache.set(page, ayahs);
@@ -247,6 +249,15 @@ function pickQAFromPage(ayahs: Ayah[], type: string, page: number): QA | null {
     const num = candidate.numberInSurah;
     if (num == null) return null;
     return { q: clean(candidate.text), a: String(num), kind: "ayahNumber", qAyahNumber: candidate.number };
+  }
+  if (type === "rightLeft") {
+    // Mirrors app.js: only ayahs that start and end on this page (one
+    // that continues onto the next page sits on both sides). Odd page =
+    // right (يمين), even page = left (يسار).
+    const whole = ayahs.filter((a) => (a.endPage || page) === page);
+    if (!whole.length) return null;
+    const candidate = whole[randInt(0, whole.length - 1)];
+    return { q: clean(candidate.text), a: page % 2 === 1 ? "يمين" : "يسار", kind: "rightLeft", qAyahNumber: candidate.number };
   }
   if (type === "listenNext") {
     const idx = randInt(0, ayahs.length - 2);
@@ -362,6 +373,12 @@ async function buildChoices(qa: QA, minP: number, maxP: number): Promise<{ choic
   const correct = qa.a;
   const want = MCQ_CHOICE_COUNT - 1;
   let distractors: string[] = [];
+
+  if (qa.kind === "rightLeft") {
+    // Fixed pair, fixed order — never shuffled (mirrors app.js).
+    const choices = ["يمين", "يسار"];
+    return { choices, correctIndex: choices.indexOf(correct) };
+  }
 
   if (qa.kind === "surah") {
     const available = await surahsInRange(minP, maxP);

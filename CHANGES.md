@@ -1,3 +1,36 @@
+# ↔️ يمين / يسار, background recitation, reminders & a review — 2026-10-30
+
+## To do on your side (once)
+1. Supabase → SQL Editor → paste the whole `supabase-schema.sql` → **Run** (safe to re-run). Needed for the new question type to save XP / count in duels, and for the two fixes below.
+2. Redeploy the duel function: `supabase functions deploy generate-duel-questions` (so ⚔️ مباشر can use يمين / يسار).
+3. Phone app: `cd mobile && npm run sync` (no new plugins to install), then build as usual. Google Play will ask about the new background-audio service — see MOBILE.md part 5.
+
+## New question type: ↔️ يمين / يسار
+- An ayah is shown; answer whether it's on a **right-hand page (odd number)** or a **left-hand page (even number)** of the Mushaf. Two big buttons side by side — «➡️ يمين» on the right, «يسار ⬅️» on the left.
+- Available everywhere: 📝 اختبارات, 📱 محلي, 📝 ذاتي and 🌐 مباشر (server function updated too).
+- Ayahs that continue onto the next page are never asked (they'd be on both sides).
+- Needs a range of at least 2 pages. Because it's only 2 choices, a correct answer earns **5 XP** instead of 10. It has its own «خبير» badge (30 correct).
+
+## 🎧 Recitation keeps playing outside the app
+- **Android:** while a recitation plays, a «🎧 …» notification shows the reciter and the current ayah, with ⏸ / ⏹ buttons. That notification (a media-playback foreground service) is what stops Android from freezing the app in the background — before, the sound stopped until you came back. New: `ItqanAudioPlugin.java`, `ItqanAudioService.java`.
+- **iPhone:** the audio session is now set to "playback" (`AppDelegate.swift`), so locking the phone or switching apps doesn't stop it, and lock-screen controls work.
+- **Website:** the browser's media controls (lock screen / notification shade on Android Chrome) show the ayah and offer play / pause / stop.
+- Moving from one ayah to the next no longer depends only on a fast timer (browsers slow timers down in the background) — the audio's own progress events drive it too.
+
+## ⏰ Reminders (phone app)
+- 👤 → ⚙️ الإعدادات والحساب → ⏰ التذكيرات, each with its own time:
+  - 📖 **الورد اليومي** — every day, "continue from page N" (opens the Mushaf on that page);
+  - 📝 **المراجعة** — only on days you haven't answered any question yet (opens 📝 اختبارات);
+  - 🕌 **سورة الكهف** — every Friday (opens the Mushaf at الكهف).
+- Scheduled on the phone, so they arrive with the app closed — no server needed. Turning on notifications for the first time in the app also turns on the evening review reminder (8 PM); everything is changeable.
+- The website shows a note that reminders are in the phone app (a website can't schedule notifications while closed).
+
+## Fixes from the review
+- **Answers given offline could be lost when syncing:** the server silently ignores an answer that arrives within 350 ms of another one, and the sync treated that as "sent". It now says `throttled` and the app retries.
+- **Sessions could be edited through the API:** a user could re-open a finished leaderboard session to keep adding answers, or change its page range afterwards. Those fields are now locked (database trigger).
+- The quiz's error message blamed "the network or the API" — questions come from local files, so it now says what really failed.
+- Cache-busting version bumped (`npm run bump`) so browsers load the new files.
+
 # 🔔 Notifications, sessions & layout fixes — 2026-10-17 (2)
 
 - **Offline notice inside the challenge card** no longer sticks out of the card, and offline notices now have a solid background — the background pattern no longer shows through them.

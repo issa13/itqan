@@ -10,6 +10,8 @@ public class MainActivity extends BridgeActivity {
         // Our own small plugin (ItqanWindowPlugin.java) — must be
         // registered before super.onCreate().
         registerPlugin(ItqanWindowPlugin.class);
+        // Keeps the recitation playing in the background (ItqanAudioPlugin.java).
+        registerPlugin(ItqanAudioPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

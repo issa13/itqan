@@ -22,6 +22,13 @@
             </intent-filter>
         </activity>
 
+        <!-- The "🎧 playing" notification that keeps the recitation going
+             when the app is in the background (ItqanAudioService.java). -->
+        <service
+            android:name=".ItqanAudioService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -34,8 +41,13 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Challenge notifications are shown immediately, never scheduled for
-         later, so the notifications plugin's exact-alarm permission isn't
+    <!-- Recitation in the background (ItqanAudioService.java) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Challenge notifications are shown immediately, and the ⏰ reminders
+         don't need to the minute (they're scheduled as "inexact" alarms),
+         so the notifications plugin's exact-alarm permission isn't
          needed (Google Play restricts it to alarm / calendar apps). -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" tools:node="remove" />
 </manifest>

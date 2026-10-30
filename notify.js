@@ -86,12 +86,217 @@ const ItqanNotify = (function () {
     } catch (e) { console.warn("notification failed", e); }
   }
 
-  // Tapping a notification opens the app on ⚔️ تحديات, where the invite waits.
+  // ================================================================
+  // ⏰ Reminders (phone app only) — scheduled on the phone itself, so
+  // they arrive even when the app is fully closed, without any server:
+  //   • 📖 الورد اليومي — every day at the chosen time («تابع من صفحة …»).
+  //   • 📝 المراجعة — at the chosen time, ONLY on days you haven't
+  //     answered any question yet. Done as single notifications for the
+  //     next REVIEW_DAYS days, re-planned whenever you practise or open
+  //     the app (so today's is dropped once you've practised, and nobody
+  //     who stopped using the app gets nagged forever).
+  //   • 🕌 سورة الكهف — every Friday morning; opens the Mushaf at الكهف.
+  // Tapping a reminder opens the matching screen.
+  // A website can't do this (browsers can't schedule a notification for a
+  // closed page), so the settings show a short note there instead.
+  // ================================================================
+  const REMINDERS_KEY = "qf_reminders";
+  const ACTIVITY_KEY = "qf_last_activity_day";
+  const REMINDER_CHANNEL = "reminders";
+  const ID_WIRD = 2100000001;
+  const ID_KAHF = 2100000002;
+  const ID_REVIEW_BASE = 2100000100; // + 0 … REVIEW_DAYS-1
+  const REVIEW_DAYS = 7;
+  const KAHF_PAGE = 293;
+  const DEFAULT_REMINDERS = {
+    wird: { on: false, time: "06:30" },
+    review: { on: false, time: "20:00" },
+    kahf: { on: false, time: "09:00" },
+  };
+  const REVIEW_MESSAGES = [
+    ["📝 لم تراجع اليوم بعد", "بضع دقائق من الأسئلة تُثبّت حفظك — حافظ على سلسلتك 🔥"],
+    ["🔥 لا تكسر سلسلتك", "سؤال واحد يكفي لتُحسب لك مراجعة اليوم."],
+    ["📖 «تعاهدوا القرآن»", "خصّص دقائق الآن لمراجعة حفظك في إتقان."],
+    ["⏰ موعد المراجعة", "اختبر نفسك في نطاق حفظك قبل نهاية اليوم."],
+  ];
+
+  function remindersSupported() { return !!LN; }
+
+  function validTime(t) { return typeof t === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(t); }
+
+  function getReminders() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(REMINDERS_KEY) || "null"); } catch (e) { saved = null; }
+    const out = {};
+    Object.keys(DEFAULT_REMINDERS).forEach((k) => {
+      const d = DEFAULT_REMINDERS[k];
+      const v = saved && typeof saved[k] === "object" && saved[k] ? saved[k] : {};
+      out[k] = { on: v.on === true, time: validTime(v.time) ? v.time : d.time };
+    });
+    return out;
+  }
+
+  function saveReminders(r) {
+    try { localStorage.setItem(REMINDERS_KEY, JSON.stringify(r)); } catch (e) { /* ignore */ }
+  }
+
+  function todayKey(d) {
+    const x = d || new Date();
+    return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+  }
+  function practisedToday() {
+    try { return localStorage.getItem(ACTIVITY_KEY) === todayKey(); } catch (e) { return false; }
+  }
+
+  function splitTime(t) {
+    const [h, m] = t.split(":").map((n) => parseInt(n, 10));
+    return { hour: h, minute: m };
+  }
+
+  async function ensureReminderChannel() {
+    if (!LN || !LN.createChannel) return;
+    try {
+      await LN.createChannel({ id: REMINDER_CHANNEL, name: "التذكيرات", description: "الورد اليومي، المراجعة، سورة الكهف يوم الجمعة", importance: 3, visibility: 1, vibration: true });
+    } catch (e) { /* ignore — Android < 8 or iOS */ }
+  }
+
+  let planning = Promise.resolve();
+  // Cancels every reminder this app scheduled, then schedules the enabled
+  // ones again from the saved settings. Safe to call often (serialized).
+  function replanReminders() {
+    planning = planning.then(doReplan, doReplan);
+    return planning;
+  }
+
+  async function doReplan() {
+    if (!LN) return { ok: false, reason: "unsupported" };
+    const ids = [ID_WIRD, ID_KAHF];
+    for (let i = 0; i < REVIEW_DAYS; i++) ids.push(ID_REVIEW_BASE + i);
+    try { await LN.cancel({ notifications: ids.map((id) => ({ id })) }); } catch (e) { /* nothing scheduled yet */ }
+
+    const r = getReminders();
+    if (!r.wird.on && !r.review.on && !r.kahf.on) return { ok: true, count: 0 };
+    if ((await state()) !== "granted") return { ok: false, reason: "permission" };
+    await ensureReminderChannel();
+
+    const list = [];
+    const common = { channelId: REMINDER_CHANNEL, smallIcon: "ic_stat_itqan", autoCancel: true, isExactNotification: false };
+
+    if (r.wird.on) {
+      let page = null;
+      try { page = parseInt(localStorage.getItem("qf_quran_last_page"), 10) || null; } catch (e) { /* ignore */ }
+      list.push(Object.assign({}, common, {
+        id: ID_WIRD,
+        title: "📖 وقت الورد اليومي",
+        body: page ? `تابع قراءتك من صفحة ${page} — «اقرؤوا القرآن فإنه يأتي يوم القيامة شفيعًا لأصحابه».` : "افتح المصحف واقرأ وردك اليوم.",
+        schedule: { on: splitTime(r.wird.time), allowWhileIdle: true },
+        extra: { open: "quran", page: page || null },
+      }));
+    }
+
+    if (r.kahf.on) {
+      list.push(Object.assign({}, common, {
+        id: ID_KAHF,
+        title: "🕌 جمعة مباركة",
+        body: "لا تنسَ قراءة سورة الكهف اليوم — اضغط لفتحها في المصحف.",
+        schedule: { on: Object.assign({ weekday: 6 }, splitTime(r.kahf.time)), allowWhileIdle: true }, // 6 = Friday
+        extra: { open: "quran", page: KAHF_PAGE },
+      }));
+    }
+
+    if (r.review.on) {
+      const { hour, minute } = splitTime(r.review.time);
+      const now = new Date();
+      const skipToday = practisedToday();
+      for (let i = 0; i < REVIEW_DAYS; i++) {
+        const at = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i, hour, minute, 0, 0);
+        if (at <= now) continue;            // today's time already passed
+        if (i === 0 && skipToday) continue; // already practised today
+        const [title, body] = REVIEW_MESSAGES[at.getDate() % REVIEW_MESSAGES.length];
+        list.push(Object.assign({}, common, {
+          id: ID_REVIEW_BASE + i,
+          title, body,
+          schedule: { at, allowWhileIdle: true },
+          extra: { open: "home" },
+        }));
+      }
+    }
+
+    if (!list.length) return { ok: true, count: 0 };
+    try {
+      await LN.schedule({ notifications: list });
+      return { ok: true, count: list.length };
+    } catch (e) {
+      console.warn("scheduling reminders failed", e);
+      return { ok: false, reason: "schedule_failed" };
+    }
+  }
+
+  // Updates one reminder ("wird" | "review" | "kahf") and re-plans.
+  // Turning one ON asks for notification permission first if needed.
+  async function setReminder(kind, patch) {
+    if (!DEFAULT_REMINDERS[kind]) return { ok: false, reason: "unknown" };
+    const r = getReminders();
+    const next = Object.assign({}, r[kind], patch || {});
+    if (!validTime(next.time)) next.time = r[kind].time;
+    if (next.on && (await state()) !== "granted") {
+      const res = await request();
+      if (res !== "granted") return { ok: false, reason: "permission" };
+    }
+    r[kind] = { on: !!next.on, time: next.time };
+    saveReminders(r);
+    return replanReminders();
+  }
+
+  // Called whenever a question is answered (any mode): today counts as
+  // practised, so today's review reminder is dropped.
+  let lastMarked = null;
+  function markActivity() {
+    const key = todayKey();
+    if (lastMarked === key) return;
+    lastMarked = key;
+    try { localStorage.setItem(ACTIVITY_KEY, key); } catch (e) { /* ignore */ }
+    if (LN && getReminders().review.on) replanReminders();
+  }
+
+  // Tapping a notification opens the matching screen: reminders carry
+  // { open, page }; challenge notifications open ⚔️ تحديات.
+  function openFromNotification(extra) {
+    const go = () => {
+      if (typeof switchView !== "function") return;
+      if (extra && extra.open === "quran") {
+        switchView("quran");
+        const page = parseInt(extra.page, 10);
+        if (page >= 1 && page <= 604 && typeof quranGoToPage === "function") {
+          try { quranGoToPage(page); } catch (e) { /* ignore */ }
+        }
+      } else if (extra && extra.open === "home") {
+        switchView("home");
+      } else {
+        switchView("challenge");
+      }
+    };
+    // a tap can arrive while the page is still starting up
+    if (document.readyState === "complete") go(); else window.addEventListener("load", go, { once: true });
+  }
+
   if (LN && LN.addListener) {
-    LN.addListener("localNotificationActionPerformed", () => {
-      if (typeof switchView === "function") switchView("challenge");
+    LN.addListener("localNotificationActionPerformed", (ev) => {
+      const extra = ev && ev.notification ? ev.notification.extra : null;
+      openFromNotification(extra);
     });
   }
 
-  return { supported, state, request, onChange, wasAsked, markAsked, challenge, isNative };
+  // Re-plan on start and each time the app comes back (the date may have
+  // changed, the last-read page moved, …).
+  if (LN) {
+    const kick = () => { replanReminders(); };
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", kick, { once: true }); else kick();
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") kick(); });
+  }
+
+  return {
+    supported, state, request, onChange, wasAsked, markAsked, challenge, isNative,
+    remindersSupported, getReminders, setReminder, replanReminders, markActivity,
+  };
 })();

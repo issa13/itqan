@@ -9,6 +9,8 @@
 //   • the strips behind the status bar / navigation bar match the theme,
 //     and their icons stay readable in light and dark theme
 //   • the splash screen hides as soon as the page is ready
+//   • the recitation keeps playing in the background (Android: a
+//     "playing" notification — ItqanAudioPlugin.java)
 //
 // Capacitor gives every installed native plugin to the page as
 // window.Capacitor.Plugins.<Name>, so no build step / bundler is needed.
@@ -115,6 +117,33 @@
       var onMushaf = typeof currentViewName === "undefined" || currentViewName === "quran";
       if (!onMushaf && typeof switchView === "function") { switchView("quran"); return; }
       safe(App.exitApp());
+    }));
+  }
+
+  // ---------------- 🎧 recitation in the background ----------------
+  // quran-reader.js announces every change of the recitation (playing /
+  // paused / next ayah / stopped) as the "itqan:recitation" event. On
+  // Android the "playing" notification (ItqanAudioPlugin.java) keeps the
+  // app running while it's shown, so the recitation continues when you
+  // switch apps or lock the phone; its ⏯ / ⏹ buttons come back here.
+  // (iPhone: the "audio" background mode in Info.plist does the same.)
+  var ItqanAudio = Plugins.ItqanAudio;
+  if (ItqanAudio && platform === "android") {
+    var audioShown = false;
+    window.addEventListener("itqan:recitation", function (e) {
+      var d = e.detail || {};
+      if (d.state === "playing" || d.state === "paused") {
+        audioShown = true;
+        safe(ItqanAudio.update({ playing: d.state === "playing", title: d.title || "إتقان", text: d.text || "" }));
+      } else if (audioShown) {
+        audioShown = false;
+        safe(ItqanAudio.stop());
+      }
+    });
+    safe(ItqanAudio.addListener("action", function (data) {
+      var action = data && data.action;
+      if (action !== "toggle" && action !== "stop") return;
+      window.dispatchEvent(new CustomEvent("itqan:recitation-command", { detail: { action: action } }));
     }));
   }
 

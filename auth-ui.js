@@ -837,8 +837,73 @@ async function renderNotifySetting() {
 async function enableNotifications() {
   hideModal(notifyAskModal);
   const result = await ItqanNotify.request();
-  showInfoToast(result === "granted" ? "🔔 ستصلك الإشعارات عندما يتحداك أحد." : "لم تُفعَّل الإشعارات. يمكنك تفعيلها من إعدادات الهاتف.");
+  // First time in the phone app: also turn on the evening review reminder
+  // (only fires on days with no practice) — easy to change in ⚙️.
+  let withReminder = false;
+  if (result === "granted" && ItqanNotify.remindersSupported()) {
+    let configured = false;
+    try { configured = localStorage.getItem("qf_reminders") !== null; } catch (e) { configured = true; }
+    if (!configured) {
+      await ItqanNotify.setReminder("review", { on: true });
+      withReminder = true;
+    }
+  }
+  showInfoToast(result === "granted"
+    ? (withReminder ? "🔔 ستصلك الإشعارات عند التحدي، وتذكير بالمراجعة الساعة 8 مساءً." : "🔔 ستصلك الإشعارات عندما يتحداك أحد.")
+    : "لم تُفعَّل الإشعارات. يمكنك تفعيلها من إعدادات الهاتف.");
   renderNotifySetting();
+  renderReminderSettings();
+}
+
+// -------- ⏰ reminders (notify.js) --------
+const remindersSettings = document.getElementById("remindersSettings");
+const remindersStatusText = document.getElementById("remindersStatusText");
+
+function renderReminderSettings() {
+  const native = typeof ItqanNotify !== "undefined" && ItqanNotify.remindersSupported();
+  remindersSettings.style.display = native ? "" : "none";
+  document.getElementById("remindersWebNote").style.display = native ? "none" : "";
+  if (!native) return;
+  const r = ItqanNotify.getReminders();
+  remindersSettings.querySelectorAll(".reminder-row").forEach((row) => {
+    const cfg = r[row.dataset.reminder];
+    if (!cfg) return;
+    row.querySelector("input[type=checkbox]").checked = cfg.on;
+    const time = row.querySelector(".reminder-time");
+    time.value = cfg.time;
+    time.disabled = !cfg.on;
+  });
+}
+
+function reminderResultText(res) {
+  if (!res) return "";
+  if (res.ok) return res.count ? "✓ تم الحفظ" : "";
+  if (res.reason === "permission") return "⚠️ الإشعارات مرفوضة — فعّلها من إعدادات الهاتف ثم أعد المحاولة.";
+  return "⚠️ تعذّر ضبط التذكير، حاول مرة أخرى.";
+}
+
+if (typeof ItqanNotify !== "undefined") {
+  remindersSettings.querySelectorAll(".reminder-row").forEach((row) => {
+    const kind = row.dataset.reminder;
+    const cb = row.querySelector("input[type=checkbox]");
+    const time = row.querySelector(".reminder-time");
+    const apply = async (patch) => {
+      cb.disabled = true;
+      try {
+        const res = await ItqanNotify.setReminder(kind, patch);
+        remindersStatusText.textContent = reminderResultText(res);
+      } catch (e) {
+        remindersStatusText.textContent = reminderResultText({ ok: false });
+      } finally {
+        cb.disabled = false;
+        renderReminderSettings();
+        renderNotifySetting();
+      }
+    };
+    cb.addEventListener("change", () => apply({ on: cb.checked, time: time.value }));
+    time.addEventListener("change", () => { if (/^\d{2}:\d{2}$/.test(time.value)) apply({ time: time.value }); });
+  });
+  renderReminderSettings();
 }
 if (typeof ItqanNotify !== "undefined") {
   document.getElementById("notifyAskYesBtn").addEventListener("click", enableNotifications);

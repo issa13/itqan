@@ -1,4 +1,5 @@
 import UIKit
+import AVFoundation
 import Capacitor
 
 @UIApplicationMain
@@ -7,7 +8,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Override point for customization after application launch.
+        // 🎧 Recitation keeps playing when the app goes to the background
+        // or the phone is locked (together with UIBackgroundModes → audio
+        // in Info.plist), and isn't silenced by the ring/silent switch.
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [])
+        } catch {
+            print("Itqan: could not set the audio session category: \(error)")
+        }
         return true
     }
 

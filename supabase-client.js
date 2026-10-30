@@ -498,6 +498,12 @@ function flushAttemptQueue() {
         if (typeof Net !== "undefined" && Net.isNetworkError(error)) break; // offline again — keep the rest
         if (/rate|too many|350/i.test(error.message || "")) { await new Promise((r) => setTimeout(r, 800)); continue; }
         console.error("queued attempt rejected", error); // invalid now (e.g. session deleted) — drop it
+      } else if (data && data.throttled) {
+        // The server keeps at most one answer per 350 ms and returns
+        // { throttled: true } WITHOUT saving it (e.g. a live answer landed at
+        // the same moment) — wait and send the same answer again.
+        await new Promise((r) => setTimeout(r, 800));
+        continue;
       } else {
         sent += 1;
         if (Array.isArray(data?.earned)) earned.push(...data.earned);
