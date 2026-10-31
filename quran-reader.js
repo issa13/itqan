@@ -508,7 +508,9 @@ function renderMushafWordHtml(word) {
     ? `<mark class="quran-highlight">${escapeQuranHtml(text)}</mark>`
     : escapeQuranHtml(text);
 
-  const keyAttr = (surahNum && ayahNum) ? ` data-k="${surahNum}:${ayahNum}"` : "";
+  const keyAttr = (surahNum && ayahNum)
+    ? ` data-k="${surahNum}:${ayahNum}" data-w="${escapeQuranHtml(word.location || "")}"`
+    : "";
   let html = `<span class="quran-word${isTarget ? " quran-ayah-target" : ""}"${keyAttr}>${textHtml}</span>`;
 
   // Only the ayah-ending word (the one carrying the embedded number)
@@ -645,6 +647,7 @@ async function quranGoToPage(page, options) {
 
   quranPageInput.value = page;
   quranPageIndicator.textContent = `الصفحة ${toArabicDigits(page)} من ٦٠٤`;
+  quranUpdateHifzMark();
   quranPrevBtn.disabled = page <= 1;
   quranNextBtn.disabled = page >= 604;
 
@@ -1006,7 +1009,14 @@ function updateQuranAudioButtons() {
 // is re-rendered on every navigation.
 quranPageContent.addEventListener("click", async (e) => {
   const btn = e.target.closest(".quran-ayah-audio-btn");
-  if (!btn || btn.disabled) return;
+  if (!btn) {
+    // 📘 a tap on a word: its meaning + the ayah's tafsir
+    const wordEl = e.target.closest(".quran-word[data-w]");
+    const selecting = window.getSelection && String(window.getSelection()).length > 0;
+    if (wordEl && !selecting) quranOpenWordInfo(wordEl);
+    return;
+  }
+  if (btn.disabled) return;
   const key = `${btn.dataset.surah}:${btn.dataset.ayah}`;
 
   // Tapping the ayah that's playing stops it.
@@ -1960,13 +1970,15 @@ quranListenFromSurah.addEventListener("change", () => syncListenAyahMax(quranLis
 quranListenToSurah.addEventListener("change", () => syncListenAyahMax(quranListenToSurah, quranListenToAyah));
 
 // -------- ⋮ menu + modals --------
-const QURAN_MODAL_IDS = ["quranSearchModal", "quranGoToModal", "quranBookmarksModal", "quranReciterModal", "quranListenModal", "quranDownloadsModal", "quranDownloadOfferModal"];
+const QURAN_MODAL_IDS = ["quranSearchModal", "quranGoToModal", "quranBookmarksModal", "quranReciterModal", "quranListenModal", "quranDownloadsModal", "quranDownloadOfferModal", "quranWordModal", "quranHifzModal"];
 
 function openQuranModal(id) {
   const el = document.getElementById(id);
   if (!el) return;
   el.style.display = "flex";
-  if (id === "quranBookmarksModal") {
+  if (id === "quranHifzModal") {
+    renderQuranHifz();
+  } else if (id === "quranBookmarksModal") {
     renderQuranBookmarksList();
   } else if (id === "quranReciterModal") {
     renderQuranReciterList();
@@ -1988,6 +2000,7 @@ function closeQuranModal(id) {
   const el = document.getElementById(id);
   if (!el) return;
   el.style.display = "none";
+  if (id === "quranWordModal") quranClearWordSelection();
 }
 
 QURAN_MODAL_IDS.forEach((id) => {
@@ -2159,3 +2172,200 @@ if ("mediaSession" in navigator) {
 // Every status change (next ayah, loading, finished, errors) goes through
 // this element's text, so watching it catches them all.
 new MutationObserver(quranBroadcastRecitation).observe(quranListenNowPlaying, { childList: true, characterData: true, subtree: true });
+
+
+// ============================================================
+// 📘 Tap a word → its meaning and the ayah's tafsir
+//
+// Data: quran-index/tafsir/NNN.json (scripts/build-tafsir.js) — bundled
+// with the site and the app, so it works offline:
+//   t: التفسير الميسر (per ayah), g: الميسر في غريب القرآن (word meanings),
+//   intro: about the surah.
+// ============================================================
+const quranTafsirCache = new Map(); // surah -> Promise<data>
+function fetchSurahTafsir(surah) {
+  if (quranTafsirCache.has(surah)) return quranTafsirCache.get(surah);
+  const version = encodeURIComponent(window.QF_ASSET_VERSION || "dev");
+  const p = fetch(`quran-index/tafsir/${String(surah).padStart(3, "0")}.json?v=${version}`, { cache: "no-cache" })
+    .then((res) => { if (!res.ok) throw new Error("HTTP " + res.status); return res.json(); })
+    .catch((e) => { quranTafsirCache.delete(surah); throw e; });
+  quranTafsirCache.set(surah, p);
+  return p;
+}
+
+// Which word-meaning entries are about this word. Entries can be a single
+// word or a short phrase, in a slightly different Uthmani spelling — so
+// compare the normalized letters (normalizeArabic() from app.js).
+function quranMatchGharib(entries, wordText) {
+  const w = normalizeArabic(wordText);
+  if (!w) return [];
+  return entries.filter(([phrase]) => {
+    const parts = normalizeArabic(phrase).split(" ");
+    return parts.some((p) => p === w || (w.length >= 3 && p.length >= 3 && (p.includes(w) || w.includes(p))));
+  });
+}
+
+function quranClearWordSelection() {
+  quranPageContent.querySelectorAll(".quran-word-selected").forEach((el) => el.classList.remove("quran-word-selected"));
+}
+
+let quranWordInfoToken = 0;
+async function quranOpenWordInfo(wordEl, ayahOverride) {
+  const myToken = ++quranWordInfoToken;
+  const body = document.getElementById("quranWordBody");
+  const title = document.getElementById("quranWordTitle");
+  let surah, ayah, wordText = "";
+  if (ayahOverride) {
+    ({ surah, ayah } = ayahOverride);
+  } else {
+    const [sStr, aStr] = (wordEl.dataset.w || "").split(":");
+    surah = parseInt(sStr, 10);
+    ayah = parseInt(aStr, 10);
+    wordText = wordEl.textContent.trim();
+    quranClearWordSelection();
+    quranPageContent.querySelectorAll(`.quran-word[data-w="${CSS.escape(wordEl.dataset.w)}"]`).forEach((el) => el.classList.add("quran-word-selected"));
+  }
+  if (!surah || !ayah) return;
+
+  title.textContent = wordText ? "📘 معنى الكلمة" : "📖 تفسير الآية";
+  body.innerHTML = '<div class="status">جاري التحميل...</div>';
+  openQuranModal("quranWordModal");
+
+  let data, catalog;
+  try {
+    [data, catalog] = await Promise.all([fetchSurahTafsir(surah), getQuranCatalogMap()]);
+  } catch (e) {
+    if (myToken !== quranWordInfoToken) return;
+    body.innerHTML = '<div class="status">تعذّر تحميل التفسير (quran-index/tafsir). تأكد من رفع المجلد، ثم حاول مرة أخرى.</div>';
+    return;
+  }
+  if (myToken !== quranWordInfoToken) return;
+
+  const info = catalog.get(surah);
+  const surahName = info ? String(info.name).replace(/^سُورَةُ\s*/, "") : String(surah);
+  const ayahCount = info ? info.numberOfAyahs : ayah;
+  const entries = (data.g && data.g[ayah]) || [];
+  const matched = wordText ? quranMatchGharib(entries, wordText) : [];
+  const others = entries.filter((e) => !matched.includes(e));
+  const tafsir = (data.t && data.t[ayah]) || "";
+  const esc = escapeQuranHtml;
+  const entryHtml = (list) => list.map(([phrase, meaning]) =>
+    `<div class="word-entry"><span class="quran-text word-entry-phrase">﴿${esc(phrase)}﴾</span> ${esc(meaning)}</div>`).join("");
+
+  let html = `<div class="word-head">`;
+  if (wordText) html += `<div class="quran-text word-big">${esc(wordText)}</div>`;
+  html += `<div class="word-loc">سورة ${esc(surahName)} · الآية ${toArabicDigits(ayah)}</div></div>`;
+
+  if (wordText) {
+    html += `<div class="section-label">📘 معنى الكلمة</div>`;
+    html += matched.length
+      ? entryHtml(matched)
+      : `<div class="word-none">لا يوجد شرح خاص لهذه الكلمة في «الميسر في غريب القرآن» — انظر تفسير الآية أدناه.</div>`;
+  }
+  if (others.length) {
+    html += wordText
+      ? `<details class="word-more"><summary>كلمات أخرى في هذه الآية (${toArabicDigits(others.length)})</summary>${entryHtml(others)}</details>`
+      : `<div class="section-label">📘 معاني الكلمات</div>${entryHtml(others)}`;
+  }
+  html += `<div class="section-label">📖 التفسير الميسر</div><div class="word-tafsir">${esc(tafsir) || "—"}</div>`;
+  if (ayah === 1 && data.intro) {
+    html += `<details class="word-more"><summary>عن سورة ${esc(surahName)}</summary><div class="word-tafsir">${esc(data.intro)}</div></details>`;
+  }
+  html += `
+    <div class="word-actions">
+      <button type="button" class="btn small ghost" data-word-nav="-1" ${ayah <= 1 ? "disabled" : ""}>→ السابقة</button>
+      <button type="button" class="btn small ghost" data-word-listen>🔊 استماع</button>
+      <button type="button" class="btn small ghost" data-word-nav="1" ${ayah >= ayahCount ? "disabled" : ""}>التالية ←</button>
+    </div>
+    <div class="modal-hint">المصدر: التفسير الميسر (مجمع الملك فهد) · الميسر في غريب القرآن.</div>`;
+  body.innerHTML = html;
+  body.scrollTop = 0;
+
+  body.querySelectorAll("[data-word-nav]").forEach((b) => b.addEventListener("click", () => {
+    quranClearWordSelection();
+    quranOpenWordInfo(null, { surah, ayah: ayah + parseInt(b.dataset.wordNav, 10) });
+  }));
+  body.querySelector("[data-word-listen]").addEventListener("click", () => {
+    quranStartRangePlayback(surah, ayah, surah, ayah, 1, 1);
+  });
+}
+
+// ============================================================
+// 📗 متابعة الحفظ — mark memorized pages (data: hifz.js → HifzStore)
+// ============================================================
+function quranJuzPages(juz) {
+  const start = JUZ_START_PAGE[juz - 1]; // from app.js
+  const end = juz < 30 ? JUZ_START_PAGE[juz] - 1 : 604;
+  const pages = [];
+  for (let p = start; p <= end; p++) pages.push(p);
+  return pages;
+}
+
+function quranUpdateHifzMark() {
+  if (typeof HifzStore === "undefined") return;
+  const on = HifzStore.has(currentQuranPage);
+  quranPageIndicator.classList.toggle("memorized", on);
+  quranPageIndicator.title = on ? "صفحة محفوظة" : "";
+  const item = document.getElementById("quranHifzToggleItem");
+  if (item) item.textContent = on ? "↩️ إلغاء «حفظت هذه الصفحة»" : "✅ حفظت هذه الصفحة";
+}
+
+function renderQuranHifz() {
+  if (typeof HifzStore === "undefined") return;
+  const summary = document.getElementById("quranHifzSummary");
+  const list = document.getElementById("quranHifzList");
+  const openJuz = new Set(Array.from(list.querySelectorAll("details[open]")).map((d) => d.dataset.juz));
+  const total = HifzStore.count();
+  const pct = Math.round((total / 604) * 100);
+  let fullJuz = 0;
+  let rows = "";
+  for (let j = 1; j <= 30; j++) {
+    const pages = quranJuzPages(j);
+    const done = pages.filter((p) => HifzStore.has(p)).length;
+    if (done === pages.length) fullJuz++;
+    const jp = Math.round((done / pages.length) * 100);
+    const chips = pages.map((p) =>
+      `<button type="button" class="hifz-page${HifzStore.has(p) ? " on" : ""}" data-page="${p}" aria-pressed="${HifzStore.has(p)}">${toArabicDigits(p)}</button>`).join("");
+    rows += `
+      <details class="hifz-juz" data-juz="${j}"${openJuz.has(String(j)) ? " open" : ""}>
+        <summary>
+          <span class="hifz-juz-name">الجزء ${toArabicDigits(j)}</span>
+          <span class="hifz-bar"><i style="width:${jp}%"></i></span>
+          <span class="hifz-juz-count">${toArabicDigits(done)}/${toArabicDigits(pages.length)}</span>
+        </summary>
+        <div class="hifz-pages">${chips}</div>
+        <div class="hifz-juz-actions">
+          <button type="button" class="btn small ghost" data-juz-all="${j}">✅ تحديد الجزء كله</button>
+          <button type="button" class="btn small ghost" data-juz-none="${j}">إلغاء التحديد</button>
+        </div>
+      </details>`;
+  }
+  summary.innerHTML = `
+    <div class="hifz-total"><b>${toArabicDigits(total)}</b> صفحة من ٦٠٤ (${toArabicDigits(pct)}٪) · ${toArabicDigits(fullJuz)} جزء كامل</div>
+    <div class="hifz-bar big"><i style="width:${pct}%"></i></div>`;
+  list.innerHTML = rows;
+}
+
+document.getElementById("quranHifzList").addEventListener("click", (e) => {
+  const pageBtn = e.target.closest(".hifz-page");
+  if (pageBtn) { HifzStore.toggle(parseInt(pageBtn.dataset.page, 10)); return; }
+  const all = e.target.closest("[data-juz-all]");
+  if (all) { HifzStore.setMany(quranJuzPages(parseInt(all.dataset.juzAll, 10)), true); return; }
+  const none = e.target.closest("[data-juz-none]");
+  if (none) HifzStore.setMany(quranJuzPages(parseInt(none.dataset.juzNone, 10)), false);
+});
+
+document.getElementById("quranHifzToggleItem").addEventListener("click", () => {
+  const on = HifzStore.toggle(currentQuranPage);
+  if (typeof showInfoToast === "function") {
+    showInfoToast(on ? `✅ الصفحة ${toArabicDigits(currentQuranPage)} ضمن محفوظاتك (${toArabicDigits(HifzStore.count())} صفحة)` : "أُزيلت الصفحة من محفوظاتك");
+  }
+});
+
+if (typeof HifzStore !== "undefined") {
+  HifzStore.onChange(() => {
+    quranUpdateHifzMark();
+    if (document.getElementById("quranHifzModal").style.display === "flex") renderQuranHifz();
+  });
+}
+quranUpdateHifzMark();

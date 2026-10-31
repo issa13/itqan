@@ -1,3 +1,34 @@
+# 📘 Word meanings, متشابهات, أكمل الآية, mistake review & memorization tracker — 2026-10-30 (2)
+
+## To do on your side (once)
+1. **Push the website first** (GitHub Pages) — the duel server reads `quran-index/mutashabihat.json` from the site.
+2. Supabase → SQL Editor → run the whole `supabase-schema.sql` again (new question types + the memorized-pages column).
+3. `supabase functions deploy generate-duel-questions`.
+4. Phone app: `cd mobile && npm run sync` (includes the new `hifz.js`), then build.
+
+## 📘 Tap a word in the Mushaf
+- Tapping any word opens a sheet with the **word's meaning** (الميسر في غريب القرآن) and **التفسير الميسر** of its ayah; «كلمات أخرى في هذه الآية», «عن السورة» on the first ayah, ← → to move between ayahs, and 🔊.
+- Works **offline**: the data is bundled in `quran-index/tafsir/` (114 files, 3.8 MB, loaded one surah at a time). Rebuild with `node scripts/build-tafsir.js` (source: the open spa5k/tafsir_api collection on GitHub).
+
+## New question types
+- **✍️ أكمل الآية** — the ayah with one word hidden, 4 words to choose from (wrong ones are real words of the same shape — same length and ending — so it can't be guessed by look).
+- **🔀 المتشابهات** — the previous ayah is shown; pick the next ayah in its exact wording, against its look-alikes from other places in the Quran (e.g. البقرة 48 / 123). 676 ayahs have look-alikes, found automatically by `node derive-mutashabihat.js` → `quran-index/mutashabihat.json`.
+- Both work in every mode (اختبارات، محلي، ذاتي، مباشر), have a «خبير» badge, and 10 XP.
+
+## 🔁 مراجعة الأخطاء
+- Every question answered wrong (📝 اختبارات, 📝 ذاتي, 🌐 مباشر) is saved and comes back **after 1 day, then 3, then 7**. Right in a review → next step; after the third it's done. Wrong again → starts over.
+- In 📝 اختبارات a bar above «سؤال جديد» shows how many are due — «🔁 مراجعة الأخطاء (٣)» switches «سؤال جديد» to them until none are left (or «⏹ إنهاء المراجعة»).
+- Saved on the device (up to 500).
+
+## 📗 متابعة الحفظ
+- 📖 القرآن → ⋮ → **✅ حفظت هذه الصفحة**, or **📗 متابعة الحفظ**: progress overall and per juz, tap pages, or mark a whole juz. A memorized page shows «📗» next to its number.
+- New range **«📗 محفوظاتي»** in 📝 اختبارات and 📱 محلي: questions only from your memorized pages (answers like page numbers / surahs too). Marking your first pages switches اختبارات to it automatically.
+- Saved on the device and, when signed in, in your account (newest copy wins across devices).
+
+## Under the hood
+- One shared rule check decides which question types fit a range (was two near-copies) — works for page sets too.
+- New files: `hifz.js`, `derive-mutashabihat.js`, `scripts/build-tafsir.js`, `quran-index/mutashabihat.json`, `quran-index/tafsir/`.
+
 # ↔️ يمين / يسار, background recitation, reminders & a review — 2026-10-30
 
 ## To do on your side (once)

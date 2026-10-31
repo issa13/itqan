@@ -61,10 +61,11 @@ interface Ayah {
 interface QA {
   q: string;
   a: string;
-  kind: "text" | "firstAyah" | "lastAyah" | "surah" | "pageNumber" | "ayahCount" | "juz" | "ayahNumber" | "rightLeft";
+  kind: "text" | "firstAyah" | "lastAyah" | "surah" | "pageNumber" | "ayahCount" | "juz" | "ayahNumber" | "rightLeft" | "word" | "mutashabih";
   qAyahNumber: string | null;
   audioOnly?: boolean;
   sourcePage?: number;
+  lookalikes?: string[];
 }
 
 interface GeneratedQuestion {
@@ -152,6 +153,34 @@ function fetchLocalSurahIndex(): Promise<RawSurahEntry[]> {
     .then((res) => { if (!res.ok) throw new Error("HTTP error fetching surahs.json"); return res.json(); })
     .catch((e) => { surahIndexPromise = null; throw e; });
   return surahIndexPromise;
+}
+
+// quran-index/mutashabihat.json — { "2:48": ["2:123"], … } (see
+// derive-mutashabihat.js). Same files as the app uses.
+let mutashabihatPromise: Promise<Record<string, string[]>> | null = null;
+function fetchMutashabihat(): Promise<Record<string, string[]>> {
+  if (mutashabihatPromise) return mutashabihatPromise;
+  mutashabihatPromise = fetch(`${DATA_BASE_URL}quran-index/mutashabihat.json`)
+    .then((res) => { if (!res.ok) throw new Error("HTTP error fetching mutashabihat.json"); return res.json(); })
+    .catch((e) => { mutashabihatPromise = null; throw e; });
+  return mutashabihatPromise;
+}
+
+// Mirrors app.js's normalizeArabic() / isBlankableWord().
+function normalizeArabic(s: string): string {
+  return (s || "")
+    .replace(/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u0640\u08D3-\u08FF\u200A-\u200F\u2060\uFEFF]/g, "")
+    .replace(/[ٱأإآ]/g, "ا")
+    .replace(/ى/g, "ي")
+    .replace(/ؤ/g, "و")
+    .replace(/ئ/g, "ي")
+    .replace(/ة/g, "ه")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+function isBlankableWord(token: string): boolean {
+  const n = normalizeArabic(token);
+  return n.length >= 3 && /^[\u0621-\u064A]+$/.test(n);
 }
 
 const pageCache = new Map<number, Ayah[]>();
@@ -369,10 +398,101 @@ function pickNearbyNumberDistractors(correctNum: number, count: number, spread: 
   return Array.from(pool).slice(0, count).map(String);
 }
 
+// «أكمل الآية» / «🔀 المتشابهات» — mirrors app.js's pickSpecialQA():
+// one ayah (any in range that fits the type) is the question.
+async function pickSpecialQA(type: string, minP: number, maxP: number, usedKeys: Set<string>): Promise<{ qa: QA; page: number; ref: string } | null> {
+  const all = await fetchLocalAyahIndex();
+  const muta = type === "mutashabih" ? await fetchMutashabihat() : {};
+  const candidates = all.filter((a) => {
+    if (a.page < minP || a.page > maxP) return false;
+    const ref = `${a.surah}:${a.ayah}`;
+    if (usedKeys.has(`${type}|${ref}`)) return false;
+    if (type === "mutashabih") return !!muta[ref];
+    const tokens = clean(a.text).split(/\s+/);
+    return tokens.length >= 4 && tokens.some(isBlankableWord);
+  });
+  for (let attempt = 0; attempt < 10 && candidates.length; attempt++) {
+    const a = candidates[randInt(0, candidates.length - 1)];
+    const ref = `${a.surah}:${a.ayah}`;
+    if (type === "completeAyah") {
+      const tokens = clean(a.text).split(/\s+/);
+      const idxs: number[] = [];
+      tokens.forEach((t, i) => { if (isBlankableWord(t)) idxs.push(i); });
+      const hide = idxs[randInt(0, idxs.length - 1)];
+      const q = tokens.map((t, i) => (i === hide ? "( ..... )" : t)).join(" ");
+      return { qa: { q, a: tokens[hide], kind: "word", qAyahNumber: ref }, page: a.page, ref };
+    }
+    // mutashabih
+    const byRef = new Map(all.map((x) => [`${x.surah}:${x.ayah}`, x]));
+    const prevRef = a.ayah > 1 ? `${a.surah}:${a.ayah - 1}` : null;
+    const prev = prevRef ? byRef.get(prevRef) : null;
+    const seen = new Set([normalizeArabic(a.text)]);
+    if (prev) seen.add(normalizeArabic(prev.text));
+    const others: string[] = [];
+    for (const k of muta[ref] || []) {
+      const o = byRef.get(k);
+      if (!o) continue;
+      const n = normalizeArabic(o.text);
+      if (seen.has(n)) continue;
+      seen.add(n);
+      others.push(clean(o.text));
+    }
+    if (!others.length) continue;
+    const surahName = clean(a.surahName).replace(/^سُورَةُ\s*/, "");
+    return {
+      qa: {
+        q: prev ? clean(prev.text) : `﴿ أول آية في سورة ${surahName} ﴾`,
+        a: clean(a.text),
+        kind: "mutashabih",
+        lookalikes: others.slice(0, MCQ_CHOICE_COUNT - 1),
+        qAyahNumber: prevRef, // the 🔊 plays the SHOWN ayah
+      },
+      page: a.page,
+      ref,
+    };
+  }
+  return null;
+}
+
+// Mirrors app.js's pickWordDistractors().
+async function pickWordDistractors(answer: string, minP: number, maxP: number, count: number): Promise<string[]> {
+  const target = normalizeArabic(answer);
+  const seen = new Set([target]);
+  const candidates: { token: string; score: number }[] = [];
+  const all = await fetchLocalAyahIndex();
+  const inRange = all.filter((a) => a.page >= minP && a.page <= maxP);
+  const source = inRange.length >= 20 ? inRange : all;
+  for (let tries = 0; tries < 60 && candidates.length < 60; tries++) {
+    const a = source[randInt(0, source.length - 1)];
+    for (const token of clean(a.text).split(/\s+/)) {
+      if (!isBlankableWord(token)) continue;
+      const n = normalizeArabic(token);
+      if (seen.has(n) || Math.abs(n.length - target.length) > 1) continue;
+      seen.add(n);
+      let score = Math.random();
+      if (n.length === target.length) score += 2;
+      if (n.slice(-2) === target.slice(-2)) score += 2;
+      if (n[0] === target[0]) score += 1;
+      candidates.push({ token, score });
+    }
+  }
+  candidates.sort((x, y) => y.score - x.score);
+  return candidates.slice(0, count).map((c) => c.token);
+}
+
 async function buildChoices(qa: QA, minP: number, maxP: number): Promise<{ choices: string[]; correctIndex: number } | null> {
   const correct = qa.a;
   const want = MCQ_CHOICE_COUNT - 1;
   let distractors: string[] = [];
+
+  if (qa.kind === "word") {
+    const choices = shuffle([correct, ...(await pickWordDistractors(correct, minP, maxP, 3))]);
+    return { choices, correctIndex: choices.indexOf(correct) };
+  }
+  if (qa.kind === "mutashabih") {
+    const choices = shuffle([correct, ...(qa.lookalikes || [])]);
+    return { choices, correctIndex: choices.indexOf(correct) };
+  }
 
   if (qa.kind === "rightLeft") {
     // Fixed pair, fixed order — never shuffled (mirrors app.js).
@@ -429,6 +549,31 @@ async function generateOneQuestion(
   maxP: number,
   usedKeys: Set<string>,
 ): Promise<GeneratedQuestion | null> {
+  if (type === "completeAyah" || type === "mutashabih") {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let picked: { qa: QA; page: number; ref: string } | null = null;
+      try { picked = await pickSpecialQA(type, minP, maxP, usedKeys); } catch (_e) { picked = null; }
+      if (!picked) return null;
+      const { qa, page, ref } = picked;
+      // the no-repeat key is the ayah ASKED about (for mutashabih that's
+      // the answer, not the shown one)
+      const key = `${type}|${ref}`;
+      const built = await buildChoices(qa, minP, maxP);
+      if (!built || built.choices.length < 2 || built.correctIndex < 0) continue;
+      usedKeys.add(key);
+      return {
+        question_type: type,
+        page,
+        q_text: qa.q,
+        q_ayah_number: qa.qAyahNumber,
+        is_audio_only: false,
+        choices: built.choices,
+        correct_index: built.correctIndex,
+      };
+    }
+    return null;
+  }
+
   let attempts = 0;
   while (attempts < 60) {
     attempts++;

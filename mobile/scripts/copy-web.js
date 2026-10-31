@@ -42,6 +42,7 @@ const WEB_FILES = [
   "audio-store.js",
   "net-status.js",
   "notify.js",
+  "hifz.js",
   "manifest.webmanifest",
 ];
 const WEB_FOLDERS = ["vendor", "fonts", "icons", "quran-index", "mushaf-layout"];

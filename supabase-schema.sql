@@ -196,6 +196,31 @@ create table if not exists public.user_settings (
 alter table public.user_settings
   add column if not exists active_session_id bigint references public.sessions(id) on delete set null;
 
+-- 📗 متابعة الحفظ (hifz.js): the memorized Mushaf pages, and when that
+-- list last changed (so the newer of two devices wins).
+alter table public.user_settings
+  add column if not exists memorized_pages int[],
+  add column if not exists memorized_updated_at timestamptz;
+
+create or replace function public.valid_page_list(p int[])
+returns boolean
+language sql
+immutable
+as $$
+  select p is null or (
+    coalesce(array_length(p, 1), 0) <= 604
+    and not exists (select 1 from unnest(p) x where x is null or x < 1 or x > 604)
+  );
+$$;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'user_settings_memorized_pages_valid') then
+    alter table public.user_settings
+      add constraint user_settings_memorized_pages_valid check (public.valid_page_list(memorized_pages));
+  end if;
+end $$;
+
 alter table public.user_settings enable row level security;
 
 drop policy if exists "Users manage their own settings" on public.user_settings;
@@ -321,13 +346,15 @@ declare
   -- "next" answer failed to save. Appended last so sort_order is stable.
   v_types text[] := array['first','last','previous','surah','pageNumber','ayahCount',
                            'nextPageFirst','prevPageFirst','pageEndToNextFirst',
-                           'pageStartToPrevLast','juz','ayahNumber','listenNext','next','rightLeft'];
+                           'pageStartToPrevLast','juz','ayahNumber','listenNext','next','rightLeft',
+                           'completeAyah','mutashabih'];
   v_labels text[] := array['خمن الآية الأولى بالصفحة','خمن الآية الأخيرة بالصفحة','خمن الآية السابقة',
                             'خمن السورة','خمن رقم الصفحة','خمن عدد آيات الصفحة',
                             'خمن أول آية بالصفحة التالية','خمن أول آية بالصفحة السابقة',
                             'من آخر آية: خمن أول آية بالصفحة التالية','من أول آية: خمن آخر آية بالصفحة السابقة',
                             'خمن الجزء','خمن رقم الآية بالسورة','استمع ثم خمن الآية التالية',
-                            'خمن الآية التالية','يمين / يسار'];
+                            'خمن الآية التالية','يمين / يسار',
+                            'أكمل الآية (الكلمة الناقصة)','المتشابهات'];
   i int;
 begin
   for i in 1 .. array_length(v_types, 1) loop
@@ -500,7 +527,7 @@ begin
   if p_question_type is null or p_question_type not in (
     'first', 'last', 'previous', 'next', 'surah', 'pageNumber', 'ayahCount',
     'nextPageFirst', 'prevPageFirst', 'pageEndToNextFirst', 'pageStartToPrevLast',
-    'juz', 'ayahNumber', 'listenNext', 'rightLeft'
+    'juz', 'ayahNumber', 'listenNext', 'rightLeft', 'completeAyah', 'mutashabih'
   ) then
     raise exception 'invalid_question_type';
   end if;
@@ -1525,7 +1552,7 @@ as $$
       where t not in (
         'first', 'last', 'previous', 'next', 'surah', 'pageNumber', 'ayahCount',
         'nextPageFirst', 'prevPageFirst', 'pageEndToNextFirst', 'pageStartToPrevLast',
-        'juz', 'ayahNumber', 'listenNext', 'rightLeft'
+        'juz', 'ayahNumber', 'listenNext', 'rightLeft', 'completeAyah', 'mutashabih'
       )
     )
     -- no duplicates (they'd double that type's share of the duel)

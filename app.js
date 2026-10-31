@@ -42,6 +42,61 @@ function juzsInRange(minP, maxP) {
   return list;
 }
 
+// Arabic text without tashkeel / Quranic marks and with one spelling for
+// the alef / hamza / ya / ta-marbuta variants — for COMPARING words
+// (look-alike ayahs, word meanings, "complete the ayah" distractors),
+// never for display. Keep in sync with derive-mutashabihat.js.
+function normalizeArabic(s) {
+  return (s || "")
+    .replace(/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u0640\u08D3-\u08FF\u200A-\u200F\u2060\uFEFF]/g, "")
+    .replace(/[ٱأإآ]/g, "ا")
+    .replace(/ى/g, "ي")
+    .replace(/ؤ/g, "و")
+    .replace(/ئ/g, "ي")
+    .replace(/ة/g, "ه")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// A word of an ayah that can be hidden in «أكمل الآية»: real letters
+// (not a waqf / sajda / hizb mark) and at least 3 of them.
+function isBlankableWord(token) {
+  const n = normalizeArabic(token);
+  return n.length >= 3 && /^[\u0621-\u064A]+$/.test(n);
+}
+
+// quran-index/mutashabihat.json — { "2:48": ["2:123"], … }, see
+// derive-mutashabihat.js. Loaded once, like the other index files.
+let mutashabihatPromise = null;
+function fetchMutashabihat() {
+  if (mutashabihatPromise) return mutashabihatPromise;
+  const version = encodeURIComponent(window.QF_ASSET_VERSION || "dev");
+  mutashabihatPromise = fetch(`quran-index/mutashabihat.json?v=${version}`, { cache: "no-cache" })
+    .then((res) => { if (!res.ok) throw new Error("HTTP error"); return res.json(); })
+    .catch((e) => { mutashabihatPromise = null; throw e; });
+  return mutashabihatPromise;
+}
+
+// "surah:ayah" -> ayah entry of quran-index/ayahs.json
+let ayahMapPromise = null;
+function getAyahMap() {
+  if (!ayahMapPromise) {
+    ayahMapPromise = fetchLocalAyahIndex()
+      .then((all) => new Map(all.map((a) => [`${a.surah}:${a.ayah}`, a])))
+      .catch((e) => { ayahMapPromise = null; throw e; });
+  }
+  return ayahMapPromise;
+}
+
+// A page range is either contiguous (minP…maxP) or, for «📗 محفوظاتي»,
+// a set of pages (`pages`, with minP/maxP its first/last page).
+function pageInRange(page, minP, maxP, pages) {
+  return pages ? pages.has(page) : page >= minP && page <= maxP;
+}
+function pagesSignature(pages) {
+  return pages ? "set:" + Array.from(pages).sort((a, b) => a - b).join(",") : "";
+}
+
 // DOM
 const flashcard = document.getElementById("flashcard");
 const homeFlashcardWrap = document.getElementById("homeFlashcardWrap");
@@ -234,6 +289,9 @@ let currentPage = null;
 let currentRangeMin = null;
 let currentRangeMax = null;
 let currentQAyahNumber = null;
+let currentQuestionKey = null;   // "type|surah:ayah" of the question on screen
+let currentQuestionRef = null;   // "surah:ayah" it was built from
+let currentFromReview = false;   // asked by 🔁 مراجعة الأخطاء
 let currentAudioEl = null;
 
 // (Session tracking and mistake-review mode used to live here for the
@@ -380,6 +438,8 @@ function resolveRangeBounds(rangeKey, customMinRaw, customMaxRaw) {
     return { minP, maxP };
   }
 
+  if (rangeKey === "memorized") return memorizedRange();
+
   switch (rangeKey) {
     case "first100": return { minP: 1, maxP: 100 };
     case "sabatawal": return { minP: 2, maxP: 207 };
@@ -398,6 +458,16 @@ function resolveRangeBounds(rangeKey, customMinRaw, customMaxRaw) {
     case "zahrawain": return { minP: 2, maxP: 76 };
     default: return { minP: 1, maxP: 604 };
   }
+}
+
+// «📗 محفوظاتي» — the pages marked as memorized (hifz.js). An empty set
+// is passed on as-is; the type checks then explain how to mark pages.
+function memorizedRange() {
+  const pages = (typeof HifzStore !== "undefined") ? HifzStore.all() : new Set();
+  if (!pages.size) return { minP: 1, maxP: 604, pages };
+  let minP = 604, maxP = 1;
+  pages.forEach((p) => { if (p < minP) minP = p; if (p > maxP) maxP = p; });
+  return { minP, maxP, pages };
 }
 
 function showHideCustomRange() {
@@ -462,7 +532,11 @@ function isRightLeftChoices(choices) {
 // Lays the two side choices out next to each other (right | left)
 // instead of stacked — shared by every mode's choice renderer.
 function applyChoiceLayout(container, choices) {
-  if (container) container.classList.toggle("two-sides", isRightLeftChoices(choices));
+  if (!container) return;
+  container.classList.toggle("two-sides", isRightLeftChoices(choices));
+  // «أكمل الآية»: 4 single words → a 2×2 grid of big buttons
+  const words = Array.isArray(choices) && choices.length === 4 && choices.every((c) => !/\s/.test(String(c).trim()));
+  container.classList.toggle("word-grid", words);
 }
 
 function rangeTooNarrowMessage(typeLabel, count, singularUnit, pluralUnit, required = MIN_MCQ_ANSWERS) {
@@ -470,77 +544,108 @@ function rangeTooNarrowMessage(typeLabel, count, singularUnit, pluralUnit, requi
   return `النطاق المحدد يغطي ${countText}، ويلزم ${required} على الأقل لإنشاء سؤال "${typeLabel}". وسّع نطاق الصفحات أو اختر نوع سؤال آخر.`;
 }
 
+// What a range contains — the numbers every "can this question type be
+// asked here?" rule needs. Works for a contiguous range and for a page
+// set (📗 محفوظاتي). Cached per range.
+const rangeInfoCache = new Map();
+async function rangeInfo(minP, maxP, pages) {
+  const cacheKey = `${minP}|${maxP}|${pagesSignature(pages)}`;
+  if (rangeInfoCache.has(cacheKey)) return rangeInfoCache.get(cacheKey);
+  const all = await fetchLocalAyahIndex();
+  let muta = {};
+  try { muta = await fetchMutashabihat(); } catch (e) { /* type just stays unavailable */ }
+  const pageSet = new Set();
+  const surahs = new Set();
+  let ayahCount = 0, mutaCount = 0;
+  for (const a of all) {
+    if (!pageInRange(a.page, minP, maxP, pages)) continue;
+    ayahCount++;
+    pageSet.add(a.page);
+    surahs.add(a.surah);
+    if (muta[`${a.surah}:${a.ayah}`]) mutaCount++;
+  }
+  let adjacent = false, odd = false, even = false;
+  pageSet.forEach((p) => {
+    if (pageSet.has(p + 1)) adjacent = true;
+    if (p % 2) odd = true; else even = true;
+  });
+  const info = {
+    isSet: !!pages,
+    empty: !!pages && pages.size === 0,
+    pageCount: pageSet.size,
+    ayahCount,
+    surahCount: surahs.size,
+    juzCount: new Set(Array.from(pageSet, juzForPage)).size,
+    adjacent,
+    bothSides: odd && even,
+    mutaCount,
+  };
+  if (rangeInfoCache.size > 50) rangeInfoCache.clear();
+  rangeInfoCache.set(cacheKey, info);
+  return info;
+}
+
+const MEMORIZED_EMPTY_MESSAGE = "لم تحدّد صفحاتك المحفوظة بعد. افتح 📖 القرآن ← ⋮ ← 📗 متابعة الحفظ وحدّد ما حفظته، أو اختر نطاقًا آخر.";
+
+// The one set of rules for every mode. `short` = the compact wording used
+// by the challenge setup screens. Returns a message, or null when fine.
+function typeBlockFromInfo(type, info, short) {
+  if (info.empty) return MEMORIZED_EMPTY_MESSAGE;
+  if (ADJACENT_TYPES.has(type) && !info.adjacent) {
+    if (info.isSet) return "يلزم صفحتان متتاليتان على الأقل ضمن صفحاتك المحفوظة لهذا النوع.";
+    return short
+      ? "يلزم نطاق يشمل أكثر من صفحة واحدة لهذا النوع."
+      : "يلزم نطاق يشمل أكثر من صفحة واحدة لإنشاء هذا النوع من الأسئلة. وسّع نطاق الصفحات أو اختر نوع سؤال آخر.";
+  }
+  if (type === RIGHT_LEFT_TYPE && !info.bothSides) {
+    return short
+      ? "يلزم نطاق يشمل أكثر من صفحة واحدة لهذا النوع."
+      : "يلزم نطاق من صفحتين على الأقل (يمنى ويسرى) لسؤال «يمين / يسار» (وإلا كان الجواب نفسه دائمًا). وسّع نطاق الصفحات أو اختر نوع سؤال آخر.";
+  }
+  if (type === "juz" && info.juzCount < MIN_MCQ_ANSWERS) {
+    return rangeTooNarrowMessage("خمن الجزء", info.juzCount, "جزء", "أجزاء");
+  }
+  if (type === "pageNumber" && info.pageCount < MIN_MCQ_ANSWERS) {
+    return rangeTooNarrowMessage("خمن رقم الصفحة", info.pageCount, "صفحة", "صفحات");
+  }
+  if (type === "surah" && info.surahCount < MIN_MCQ_ANSWERS) {
+    return rangeTooNarrowMessage("خمن السورة", info.surahCount, "سورة", "سور");
+  }
+  // "first"/"last" each draw their one correct answer per page (the
+  // page's first/last ayah), so the page count IS the valid-answer count.
+  if ((type === "first" || type === "last") && info.pageCount < MIN_MCQ_ANSWERS) {
+    return rangeTooNarrowMessage(getTypeLabel(type), info.pageCount, "صفحة", "صفحات");
+  }
+  // Needs strictly MORE than MIN_MCQ_ANSWERS pages (not just >=).
+  if (type === "ayahCount" && info.pageCount <= MIN_MCQ_ANSWERS) {
+    return rangeTooNarrowMessage("خمن كم عدد آيات الصفحة", info.pageCount, "صفحة", "صفحات", MIN_MCQ_ANSWERS + 1);
+  }
+  // These pick any ayah in range as the question, so the total ayah
+  // count in range is the meaningful pool size.
+  if ((type === "previous" || type === "next" || type === "listenNext" || type === "completeAyah") && info.ayahCount < MIN_MCQ_ANSWERS) {
+    return rangeTooNarrowMessage(getTypeLabel(type), info.ayahCount, "آية", "آيات");
+  }
+  // Needs strictly more than MIN_AYAHNUMBER_ANSWERS ayahs in range.
+  if (type === "ayahNumber" && info.ayahCount <= MIN_AYAHNUMBER_ANSWERS) {
+    return rangeTooNarrowMessage("خمن رقم الآية بالسورة", info.ayahCount, "آية", "آيات", MIN_AYAHNUMBER_ANSWERS + 1);
+  }
+  if (type === "mutashabih" && info.mutaCount < 1) {
+    return short
+      ? "لا توجد في هذا النطاق آيات لها متشابهات."
+      : "لا توجد في هذا النطاق آيات لها متشابهات في مواضع أخرى. وسّع نطاق الصفحات أو اختر نوع سؤال آخر.";
+  }
+  return null;
+}
+
 // Central "can we generate a question of this type, in this range,
 // right now?" check. Returns a message to show when blocked, or null
 // when it's fine to proceed.
-async function checkGenerationBlock(type, minP, maxP) {
-  if (type === RIGHT_LEFT_TYPE && maxP <= minP) {
-    return "يلزم نطاق من صفحتين على الأقل لسؤال «يمين / يسار» (وإلا كان الجواب نفسه دائمًا). وسّع نطاق الصفحات أو اختر نوع سؤال آخر.";
+async function checkGenerationBlock(type, minP, maxP, pages) {
+  try {
+    return typeBlockFromInfo(type, await rangeInfo(minP, maxP, pages), false);
+  } catch (e) {
+    return "تعذّر تحميل بيانات القرآن (quran-index). أعد تحميل الصفحة.";
   }
-  if (ADJACENT_TYPES.has(type) && maxP <= minP) {
-    return "يلزم نطاق يشمل أكثر من صفحة واحدة لإنشاء هذا النوع من الأسئلة. وسّع نطاق الصفحات أو اختر نوع سؤال آخر.";
-  }
-
-  if (type === "juz") {
-    const available = juzsInRange(minP, maxP);
-    if (available.length < MIN_MCQ_ANSWERS) {
-      return rangeTooNarrowMessage("خمن الجزء", available.length, "جزء", "أجزاء");
-    }
-  }
-
-  if (type === "pageNumber") {
-    const available = maxP - minP + 1;
-    if (available < MIN_MCQ_ANSWERS) {
-      return rangeTooNarrowMessage("خمن رقم الصفحة", available, "صفحة", "صفحات");
-    }
-  }
-
-  if (type === "surah") {
-    const available = await surahsInRange(minP, maxP);
-    if (available.length < MIN_MCQ_ANSWERS) {
-      return rangeTooNarrowMessage("خمن السورة", available.length, "سورة", "سور");
-    }
-  }
-
-  // "first"/"last" each draw their one correct answer per page (the
-  // page's first/last ayah), so the page count IS the valid-answer count.
-  if (type === "first" || type === "last") {
-    const available = maxP - minP + 1;
-    if (available < MIN_MCQ_ANSWERS) {
-      const label = type === "first" ? "خمن الآية الأولى بالصفحة" : "خمن الآية الأخيرة بالصفحة";
-      return rangeTooNarrowMessage(label, available, "صفحة", "صفحات");
-    }
-  }
-
-  // Needs strictly MORE than MIN_MCQ_ANSWERS pages (not just >=), per
-  // the requested gating for this specific type.
-  if (type === "ayahCount") {
-    const available = maxP - minP + 1;
-    if (available <= MIN_MCQ_ANSWERS) {
-      return rangeTooNarrowMessage("خمن كم عدد آيات الصفحة", available, "صفحة", "صفحات", MIN_MCQ_ANSWERS + 1);
-    }
-  }
-
-  // "previous"/"next"/"listenNext" pick any ayah in range as the
-  // question, so the total ayah count in range is the meaningful pool
-  // size here.
-  if (type === "previous" || type === "next" || type === "listenNext") {
-    const available = await ayahsCountInRange(minP, maxP);
-    if (available < MIN_MCQ_ANSWERS) {
-      return rangeTooNarrowMessage(getTypeLabel(type), available, "آية", "آيات");
-    }
-  }
-
-  // Needs strictly more than MIN_AYAHNUMBER_ANSWERS ayahs in range —
-  // see the constant's own comment for why this type gets extra headroom.
-  if (type === "ayahNumber") {
-    const available = await ayahsCountInRange(minP, maxP);
-    if (available <= MIN_AYAHNUMBER_ANSWERS) {
-      return rangeTooNarrowMessage("خمن رقم الآية بالسورة", available, "آية", "آيات", MIN_AYAHNUMBER_ANSWERS + 1);
-    }
-  }
-
-  return null;
 }
 
 // Wraps range resolution + checkGenerationBlock() together — the one
@@ -553,7 +658,7 @@ async function getBlockMessageForCurrentState(type) {
     }
     return "الرجاء اختيار نطاق صفحات صالح.";
   }
-  return await checkGenerationBlock(type, range.minP, range.maxP);
+  return await checkGenerationBlock(type, range.minP, range.maxP, range.pages);
 }
 
 // Reflects getBlockMessageForCurrentState() in the UI immediately on
@@ -580,7 +685,9 @@ async function refreshGenerationAvailability() {
 // that could change the active range (guest picker, session sync).
 function updateHomeRangeChip() {
   const range = getActiveRange();
-  homeRangeChip.textContent = range ? `📖 ${range.minP}–${range.maxP}` : "📖 —";
+  homeRangeChip.textContent = !range ? "📖 —"
+    : range.pages ? `📗 محفوظاتي (${range.pages.size})`
+    : `📖 ${range.minP}–${range.maxP}`;
 }
 
 function setOptionAvailability(value, available) {
@@ -604,33 +711,16 @@ async function refreshQuestionTypeAvailability() {
     await refreshGenerationAvailability();
     return;
   }
-  const { minP, maxP } = range;
+  let info = null;
+  try { info = await rangeInfo(range.minP, range.maxP, range.pages); } catch (e) { info = null; }
 
-  const pageCount = maxP - minP + 1;
-  const juzCount = juzsInRange(minP, maxP).length;
-  let surahCount = 0;
-  let ayahCount = 0;
-  try {
-    surahCount = (await surahsInRange(minP, maxP)).length;
-  } catch (e) { /* leave at 0 → hides the option safely */ }
-  try {
-    ayahCount = await ayahsCountInRange(minP, maxP);
-  } catch (e) { /* leave at 0 → hides the option safely */ }
-
-  setOptionAvailability("pageNumber", pageCount >= MIN_MCQ_ANSWERS);
-  setOptionAvailability("surah", surahCount >= MIN_MCQ_ANSWERS);
-  setOptionAvailability("juz", juzCount >= MIN_MCQ_ANSWERS);
-  setOptionAvailability("first", pageCount >= MIN_MCQ_ANSWERS);
-  setOptionAvailability("last", pageCount >= MIN_MCQ_ANSWERS);
-  setOptionAvailability("ayahCount", pageCount > MIN_MCQ_ANSWERS);
-  setOptionAvailability("previous", ayahCount >= MIN_MCQ_ANSWERS);
-  setOptionAvailability("next", ayahCount >= MIN_MCQ_ANSWERS);
-  setOptionAvailability("listenNext", ayahCount >= MIN_MCQ_ANSWERS);
-  setOptionAvailability("ayahNumber", ayahCount > MIN_AYAHNUMBER_ANSWERS);
-
-  const multiPage = maxP > minP;
-  ADJACENT_TYPES.forEach((t) => setOptionAvailability(t, multiPage));
-  setOptionAvailability(RIGHT_LEFT_TYPE, multiPage);
+  // An empty «📗 محفوظاتي» hides nothing — the message under the button
+  // explains what to do instead.
+  if (info && !info.empty) {
+    Array.from(qTypeSelect.options).forEach((opt) => {
+      setOptionAvailability(opt.value, !typeBlockFromInfo(opt.value, info, false));
+    });
+  }
 
   const selectedOption = qTypeSelect.querySelector(`option[value="${qTypeSelect.value}"]`);
   if (selectedOption && selectedOption.disabled) {
@@ -919,6 +1009,8 @@ function getTypeDescription(type) {
     case "ayahNumber": return "سيظهر لك آية، والمطلوب أن تخمّن رقمها داخل سورتها.";
     case "listenNext": return "استمع إلى تلاوة الآية (لن يظهر نصها)، ثم اختر الآية التي تليها مباشرة في نفس الصفحة. لن تتمكن من الإجابة قبل الاستماع.";
     case "rightLeft": return "سيظهر لك آية، والمطلوب أن تحدد: هل هي في الصفحة اليمنى (رقم فردي) أم في الصفحة اليسرى (رقم زوجي) من المصحف؟";
+    case "completeAyah": return "سيظهر لك آية حُذفت منها كلمة، والمطلوب أن تختار الكلمة الصحيحة.";
+    case "mutashabih": return "سيظهر لك آية، والمطلوب أن تختار الآية التي تليها بلفظها الصحيح — الخيارات الأخرى آيات متشابهة من مواضع أخرى.";
     default: return "اختر نوع السؤال ثم اضغط سؤال جديد.";
   }
 }
@@ -940,6 +1032,8 @@ function getTypeLabel(type) {
     case "ayahNumber": return "خمن رقم الآية بالسورة";
     case "listenNext": return "🎧 استمع ثم خمن الآية التالية";
     case "rightLeft": return "يمين / يسار";
+    case "completeAyah": return "أكمل الآية (الكلمة الناقصة)";
+    case "mutashabih": return "🔀 المتشابهات";
     default: return "—";
   }
 }
@@ -1168,6 +1262,89 @@ function pickNearbyNumberDistractors(correctNum, count, spread) {
   return Array.from(pool).slice(0, count).map(String);
 }
 
+// «أكمل الآية» and «🔀 المتشابهات» — built from one ayah (page + its
+// index on the page), not from the page's structure.
+async function pickSpecialQA(type, page, idx) {
+  const ayahs = await fetchPageAyahs(page);
+  const ayah = ayahs && ayahs[idx];
+  if (!ayah) return null;
+
+  if (type === "completeAyah") {
+    const tokens = clean(ayah.text).split(/\s+/);
+    const candidates = [];
+    tokens.forEach((t, i) => { if (isBlankableWord(t)) candidates.push(i); });
+    if (tokens.length < 4 || !candidates.length) return null;
+    const hide = candidates[randInt(0, candidates.length - 1)];
+    const q = tokens.map((t, i) => (i === hide ? "( ..... )" : t)).join(" ");
+    return { q, a: tokens[hide], kind: "word", qAyahNumber: ayah.number };
+  }
+
+  if (type === "mutashabih") {
+    const [muta, map] = await Promise.all([fetchMutashabihat(), getAyahMap()]);
+    const ref = ayah.number; // "surah:ayah"
+    const lookalikes = muta[ref];
+    if (!lookalikes || !lookalikes.length) return null;
+    const [sNum, aNum] = ref.split(":").map((n) => parseInt(n, 10));
+    const prevRef = aNum > 1 ? `${sNum}:${aNum - 1}` : null;
+    const prev = prevRef ? map.get(prevRef) : null;
+
+    // Wrong answers: the look-alikes — never the shown ayah itself (two
+    // neighbouring ayahs can be look-alikes) and never two that read the same.
+    const seen = new Set([normalizeArabic(ayah.text)]);
+    if (prev) seen.add(normalizeArabic(prev.text));
+    const others = [];
+    for (const k of lookalikes) {
+      const other = map.get(k);
+      if (!other) continue;
+      const n = normalizeArabic(other.text);
+      if (seen.has(n)) continue;
+      seen.add(n);
+      others.push(clean(other.text));
+    }
+    if (!others.length) return null;
+    const surahName = clean(ayah.surah && ayah.surah.name).replace(/^سُورَةُ\s*/, "");
+    return {
+      q: prev ? clean(prev.text) : `﴿ أول آية في سورة ${surahName} ﴾`,
+      a: clean(ayah.text),
+      kind: "mutashabih",
+      lookalikes: others.slice(0, MCQ_CHOICE_COUNT - 1),
+      // the 🔊 plays the ayah that's SHOWN (the previous one), never the answer
+      qAyahNumber: prevRef,
+    };
+  }
+  return null;
+}
+
+// Wrong answers for «أكمل الآية»: real words from the range that look
+// like they could fit — about the same length, preferring the same
+// ending (e.g. -ون / -ين) and first letter — so the right word can't be
+// spotted by shape alone.
+const WORD_CHOICE_COUNT = 4;
+async function pickWordDistractors(answer, minP, maxP, pages, count) {
+  const target = normalizeArabic(answer);
+  const seen = new Set([target]);
+  const candidates = [];
+  const all = await fetchLocalAyahIndex();
+  const inRange = all.filter((a) => pageInRange(a.page, minP, maxP, pages));
+  const source = inRange.length >= 20 ? inRange : all;
+  for (let tries = 0; tries < 60 && candidates.length < 60; tries++) {
+    const a = source[randInt(0, source.length - 1)];
+    for (const token of clean(a.text).split(/\s+/)) {
+      if (!isBlankableWord(token)) continue;
+      const n = normalizeArabic(token);
+      if (seen.has(n) || Math.abs(n.length - target.length) > 1) continue;
+      seen.add(n);
+      let score = Math.random();
+      if (n.length === target.length) score += 2;
+      if (n.slice(-2) === target.slice(-2)) score += 2;
+      if (n[0] === target[0]) score += 1;
+      candidates.push({ token, score });
+    }
+  }
+  candidates.sort((x, y) => y.score - x.score);
+  return candidates.slice(0, count).map((c) => c.token);
+}
+
 // Below this many, a "first ayah of a page" or "last ayah of a page"
 // question is considered too easy to guess by shape alone — see
 // collectPositionalAyahTexts()'s comment. MIN_MCQ_ANSWERS already
@@ -1176,10 +1353,40 @@ function pickNearbyNumberDistractors(correctNum, count, spread) {
 // distractor strategy, so it's kept as its own named constant.
 const MIN_SAME_POSITION_DISTRACTORS = 3;
 
-async function buildChoices(qa, minP, maxP) {
+async function buildChoices(qa, minP, maxP, pages) {
   const correct = qa.a;
   const want = MCQ_CHOICE_COUNT - 1;
   let distractors = [];
+
+  if (qa.kind === "word") {
+    const words = await pickWordDistractors(correct, minP, maxP, pages, WORD_CHOICE_COUNT - 1);
+    const choices = shuffle([correct, ...words]);
+    return { choices, correctIndex: choices.indexOf(correct) };
+  }
+  if (qa.kind === "mutashabih") {
+    const choices = shuffle([correct, ...(qa.lookalikes || [])]);
+    return { choices, correctIndex: choices.indexOf(correct) };
+  }
+
+  // 📗 محفوظاتي: answers come from the memorized pages, not everything
+  // between the first and last one.
+  if (pages && (qa.kind === "surah" || qa.kind === "pageNumber" || qa.kind === "juz")) {
+    const all = await fetchLocalAyahIndex();
+    let available;
+    if (qa.kind === "surah") {
+      const names = new Map();
+      all.forEach((a) => { if (pages.has(a.page) && !names.has(a.surah)) names.set(a.surah, clean(a.surahName)); });
+      available = Array.from(names.values());
+    } else if (qa.kind === "pageNumber") {
+      available = Array.from(pages).map(String);
+    } else {
+      available = Array.from(new Set(Array.from(pages, juzForPage))).map(String);
+    }
+    const pool = shuffle(available.filter((v) => v !== correct));
+    distractors = pool.slice(0, Math.max(0, Math.min(MCQ_CHOICE_COUNT, available.length) - 1));
+    const choices = shuffle([correct, ...distractors]);
+    return { choices, correctIndex: choices.indexOf(correct) };
+  }
 
   if (qa.kind === "rightLeft") {
     // Fixed pair, fixed order (see RIGHT_LEFT_TYPE) — never shuffled.
@@ -1263,37 +1470,40 @@ function indexRange(lo, hi) {
   return out;
 }
 
-async function buildQuestionPool(type, minP, maxP) {
-  const all = await fetchLocalAyahIndex();
+// Types built by pickSpecialQA() (any ayah of the page can be the
+// question, chosen by its own rules — not by its position on the page).
+const SPECIAL_TYPES = new Set(["completeAyah", "mutashabih"]);
 
-  const refsByPage = new Map();
-  const spillsByPage = new Map(); // page -> Set of indexes of ayahs that continue onto the next page
+async function buildQuestionPool(type, minP, maxP, pages) {
+  const all = await fetchLocalAyahIndex();
+  const muta = type === "mutashabih" ? await fetchMutashabihat() : null;
+
+  const byPage = new Map(); // page -> [{ ref, text, spills }]
   for (const a of all) {
-    if (a.page < minP || a.page > maxP) continue;
-    let list = refsByPage.get(a.page);
-    if (!list) { list = []; refsByPage.set(a.page, list); }
-    if (a.endPage && a.endPage !== a.page) {
-      if (!spillsByPage.has(a.page)) spillsByPage.set(a.page, new Set());
-      spillsByPage.get(a.page).add(list.length);
-    }
-    list.push(`${a.surah}:${a.ayah}`);
+    if (!pageInRange(a.page, minP, maxP, pages)) continue;
+    let list = byPage.get(a.page);
+    if (!list) { list = []; byPage.set(a.page, list); }
+    list.push({ ref: `${a.surah}:${a.ayah}`, text: a.text, spills: !!(a.endPage && a.endPage !== a.page) });
   }
 
   // Adjacent-page types only ever use pages whose neighbour is still
   // inside the range (same rule generateCard() always applied).
-  const pageStart = (type === "prevPageFirst" || type === "pageStartToPrevLast") ? minP + 1 : minP;
-  const pageEnd = (type === "nextPageFirst" || type === "pageEndToNextFirst") ? maxP - 1 : maxP;
+  const needsNext = type === "nextPageFirst" || type === "pageEndToNextFirst";
+  const needsPrev = type === "prevPageFirst" || type === "pageStartToPrevLast";
   const isAdjacent = ADJACENT_TYPES.has(type);
+  const isSpecial = SPECIAL_TYPES.has(type);
 
-  const pages = [];
-  for (let page = pageStart; page <= pageEnd; page++) {
-    const refs = refsByPage.get(page);
-    if (!refs || !refs.length) continue;
-    const n = refs.length;
-    if (!isAdjacent && n < 2) continue; // pickQAFromPage() needs at least 2 ayahs on the page
+  const result = [];
+  const sortedPages = Array.from(byPage.keys()).sort((x, y) => x - y);
+  for (const page of sortedPages) {
+    if (needsNext && !pageInRange(page + 1, minP, maxP, pages)) continue;
+    if (needsPrev && !pageInRange(page - 1, minP, maxP, pages)) continue;
+    const list = byPage.get(page);
+    const n = list.length;
+    if (!isAdjacent && !isSpecial && n < 2) continue; // pickQAFromPage() needs at least 2 ayahs on the page
 
     // Which ayahs of this page can be THE question ayah for this type —
-    // mirrors exactly what pickQAFromPage()/pickAdjacentPageQA() pick from.
+    // mirrors exactly what pickQAFromPage()/pickAdjacentPageQA()/pickSpecialQA() pick from.
     let idxs;
     switch (type) {
       case "first":
@@ -1310,27 +1520,34 @@ async function buildQuestionPool(type, minP, maxP) {
         idxs = [0]; break;
       case "pageEndToNextFirst":
         idxs = [n - 1]; break;
-      case RIGHT_LEFT_TYPE: {
-        const spills = spillsByPage.get(page);
-        idxs = indexRange(0, n - 1).filter((i) => !(spills && spills.has(i)));
+      case RIGHT_LEFT_TYPE:
+        idxs = indexRange(0, n - 1).filter((i) => !list[i].spills);
         break;
-      }
+      case "completeAyah":
+        idxs = indexRange(0, n - 1).filter((i) => {
+          const tokens = list[i].text.split(/\s+/);
+          return tokens.length >= 4 && tokens.some(isBlankableWord);
+        });
+        break;
+      case "mutashabih":
+        idxs = indexRange(0, n - 1).filter((i) => !!muta[list[i].ref]);
+        break;
       default: // surah, pageNumber, juz, ayahNumber
         idxs = indexRange(0, n - 1);
     }
     if (!idxs.length) continue;
-    pages.push(idxs.map((idx) => ({ page, idx, ref: refs[idx] })));
+    result.push(idxs.map((idx) => ({ page, idx, ref: list[idx].ref })));
   }
 
-  return { pages };
+  return { pages: result };
 }
 
 const questionPoolCache = new Map(); // "type|min|max" -> Promise<pool>
-function getQuestionPool(type, minP, maxP) {
-  const cacheKey = `${type}|${minP}|${maxP}`;
+function getQuestionPool(type, minP, maxP, pages) {
+  const cacheKey = `${type}|${minP}|${maxP}|${pagesSignature(pages)}`;
   if (questionPoolCache.has(cacheKey)) return questionPoolCache.get(cacheKey);
 
-  const promise = buildQuestionPool(type, minP, maxP).catch((e) => {
+  const promise = buildQuestionPool(type, minP, maxP, pages).catch((e) => {
     questionPoolCache.delete(cacheKey);
     throw e;
   });
@@ -1370,9 +1587,34 @@ function pickFromQuestionPool(pool, type, isExcluded) {
 //   { status: "exhausted" } — every possible question of this type in
 //                             this range is already excluded
 //   { status: "error" }     — something else went wrong (bad page data etc.)
-async function generateUniqueQuestion(type, minP, maxP, excludeKeys) {
+// One pool entry → a ready question ({ qa, built }), or null if this
+// entry can't make a valid one (bad data).
+async function buildQuestionFromEntry(type, entry, minP, maxP, pages) {
+  let qa = null;
   try {
-    const pool = await getQuestionPool(type, minP, maxP);
+    if (ADJACENT_TYPES.has(type)) {
+      qa = await pickAdjacentPageQA(type, entry.page);
+    } else if (SPECIAL_TYPES.has(type)) {
+      qa = await pickSpecialQA(type, entry.page, entry.idx);
+    } else {
+      const ayahs = await fetchPageAyahs(entry.page);
+      qa = pickQAFromPage(ayahs, type, entry.page, entry.idx);
+    }
+  } catch (e) {
+    qa = null;
+  }
+  if (qa && !qa.q && !qa.audioOnly) qa = null;
+  if (qa && !qa.a) qa = null;
+  if (!qa) return null;
+
+  const built = await buildChoices(qa, minP, maxP, pages);
+  if (!built || built.choices.length < 2 || built.correctIndex < 0) return null;
+  return { qa, built };
+}
+
+async function generateUniqueQuestion(type, minP, maxP, excludeKeys, pages) {
+  try {
+    const pool = await getQuestionPool(type, minP, maxP, pages);
     const rejected = new Set(); // entries that turned out unusable (bad data) — never retried
     const isExcluded = (key) => (excludeKeys && excludeKeys.has(key)) || rejected.has(key);
 
@@ -1380,28 +1622,33 @@ async function generateUniqueQuestion(type, minP, maxP, excludeKeys) {
       const entry = pickFromQuestionPool(pool, type, isExcluded);
       if (!entry) return { status: "exhausted" };
       const key = questionKey(type, entry.ref);
-
-      let qa = null;
-      try {
-        if (ADJACENT_TYPES.has(type)) {
-          qa = await pickAdjacentPageQA(type, entry.page);
-        } else {
-          const ayahs = await fetchPageAyahs(entry.page);
-          qa = pickQAFromPage(ayahs, type, entry.page, entry.idx);
-        }
-      } catch (e) {
-        qa = null;
-      }
-      if (qa && !qa.q && !qa.audioOnly) qa = null;
-      if (qa && !qa.a) qa = null;
-      if (!qa) { rejected.add(key); continue; }
-
-      const built = await buildChoices(qa, minP, maxP);
-      if (!built || built.choices.length < 2 || built.correctIndex < 0) { rejected.add(key); continue; }
-
-      return { status: "ok", qa, built, page: entry.page, key };
+      const made = await buildQuestionFromEntry(type, entry, minP, maxP, pages);
+      if (!made) { rejected.add(key); continue; }
+      return { status: "ok", qa: made.qa, built: made.built, page: entry.page, key, ref: entry.ref };
     }
     return { status: "error" };
+  } catch (e) {
+    return { status: "error" };
+  }
+}
+
+// The same question again (same type, same ayah) — for 🔁 مراجعة الأخطاء.
+// The wrong answers are drawn fresh from the range it was first asked in.
+async function generateSpecificQuestion(type, ref, minP, maxP) {
+  try {
+    let entry = null;
+    for (const [lo, hi] of [[minP, maxP], [1, 604]]) {
+      const pool = await getQuestionPool(type, lo, hi);
+      for (const arr of pool.pages) {
+        entry = arr.find((e) => e.ref === ref) || null;
+        if (entry) break;
+      }
+      if (entry) break;
+    }
+    if (!entry) return { status: "missing" };
+    const made = await buildQuestionFromEntry(type, entry, minP, maxP);
+    if (!made) return { status: "error" };
+    return { status: "ok", qa: made.qa, built: made.built, page: entry.page, key: questionKey(type, ref), ref };
   } catch (e) {
     return { status: "error" };
   }
@@ -1415,7 +1662,7 @@ function rememberTestKey(key) {
   while (recentTestKeys.length > TESTS_NO_REPEAT_WINDOW) recentTestKeys.shift();
 }
 
-async function generateQuestionForTests(type, minP, maxP) {
+async function generateQuestionForTests(type, minP, maxP, pages) {
   // Normally every recent question is excluded. If the range is so
   // small that a type has fewer questions than the window (e.g. 6
   // pages of "ayah count"), don't block the person — relax by
@@ -1423,7 +1670,7 @@ async function generateQuestionForTests(type, minP, maxP) {
   // repeats is always the one asked longest ago.
   for (let start = 0; ; start++) {
     const excluded = new Set(recentTestKeys.slice(start));
-    const gen = await generateUniqueQuestion(type, minP, maxP, excluded);
+    const gen = await generateUniqueQuestion(type, minP, maxP, excluded, pages);
     if (gen.status !== "exhausted" || start >= recentTestKeys.length) return gen;
   }
 }
@@ -1511,6 +1758,13 @@ function finishQuestion(isCorrect) {
 
   saveGuestScore();
   if (typeof ItqanNotify !== "undefined") ItqanNotify.markActivity(); // today counts as practised (⏰ reminders)
+  if (currentQuestionKey) {
+    ReviewStore.record({
+      key: currentQuestionKey, type: currentQuestionType, ref: currentQuestionRef, page: currentPage,
+      minP: currentRangeMin, maxP: currentRangeMax,
+    }, isCorrect, currentFromReview);
+    renderReviewBar();
+  }
 
   if (typeof recordAttempt === "function" && currentQuestionType) {
     // Read from the browser's own clock (not UTC) so the
@@ -1543,6 +1797,124 @@ function finishQuestion(isCorrect) {
   }
 }
 
+// ============================================================
+// 🔁 مراجعة الأخطاء — a question you got wrong (📝 اختبارات, 📝 ذاتي,
+// 🌐 مباشر) comes back after 1, 3 and 7 days. Each review answered
+// right moves it to the next step; after the last one it's done. A wrong
+// review starts it over (tomorrow). Saved on this device.
+// ============================================================
+const REVIEW_KEY = "qf_review_items";
+const REVIEW_INTERVALS_DAYS = [1, 3, 7];
+const REVIEW_MAX_ITEMS = 500;
+
+function toArabicNumber(n) { return String(n).replace(/\d/g, (d) => "٠١٢٣٤٥٦٧٨٩"[d]); }
+
+const ReviewStore = (function () {
+  function startOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); }
+  function inDays(n) { const now = new Date(); return startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + n)); }
+
+  function load() {
+    try {
+      const data = JSON.parse(localStorage.getItem(REVIEW_KEY) || "{}");
+      return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+    } catch (e) { return {}; }
+  }
+  let items = load();
+  function save() {
+    // keep the most recent mistakes if it ever grows too big
+    const keys = Object.keys(items);
+    if (keys.length > REVIEW_MAX_ITEMS) {
+      keys.sort((a, b) => (items[a].addedAt || 0) - (items[b].addedAt || 0))
+        .slice(0, keys.length - REVIEW_MAX_ITEMS).forEach((k) => delete items[k]);
+    }
+    try { localStorage.setItem(REVIEW_KEY, JSON.stringify(items)); } catch (e) { /* storage full */ }
+  }
+  function valid(q) {
+    return q && typeof q.key === "string" && typeof q.type === "string" && /^\d+:\d+$/.test(q.ref || "") &&
+      Number.isInteger(q.minP) && Number.isInteger(q.maxP) && q.minP >= 1 && q.maxP <= 604 && q.minP <= q.maxP;
+  }
+
+  // q = { key, type, ref, page, minP, maxP }; fromReview = asked by the review itself
+  function record(q, isCorrect, fromReview) {
+    if (!valid(q)) return;
+    const existing = items[q.key];
+    if (!isCorrect) {
+      items[q.key] = {
+        type: q.type, ref: q.ref, page: q.page || null, minP: q.minP, maxP: q.maxP,
+        stage: 0, due: inDays(REVIEW_INTERVALS_DAYS[0]), addedAt: existing?.addedAt || Date.now(),
+        misses: (existing?.misses || 0) + 1,
+      };
+    } else if (existing && fromReview) {
+      const stage = existing.stage + 1;
+      if (stage >= REVIEW_INTERVALS_DAYS.length) delete items[q.key];
+      else items[q.key] = Object.assign({}, existing, { stage, due: inDays(REVIEW_INTERVALS_DAYS[stage]) });
+    } else {
+      return; // right answer to a question that isn't waiting for review
+    }
+    save();
+  }
+  function list() { return Object.keys(items).map((key) => Object.assign({ key }, items[key])); }
+  function dueList() {
+    const now = Date.now();
+    return list().filter((it) => it.due <= now).sort((a, b) => a.due - b.due || a.addedAt - b.addedAt);
+  }
+  function nextDue() { return dueList()[0] || null; }
+  function counts() {
+    const all = list();
+    const now = Date.now();
+    return { due: all.filter((it) => it.due <= now).length, total: all.length };
+  }
+  function nextDueLabel() {
+    const upcoming = list().map((it) => it.due).filter((d) => d > Date.now()).sort((a, b) => a - b)[0];
+    if (!upcoming) return "";
+    const days = Math.round((upcoming - startOfDay(new Date())) / 86400000);
+    return days <= 1 ? "غدًا" : `بعد ${toArabicNumber(days)} أيام`;
+  }
+  function remove(key) { delete items[key]; save(); }
+  return { record, dueList, nextDue, counts, nextDueLabel, remove };
+})();
+
+let reviewMode = false;
+const reviewBar = document.getElementById("reviewBar");
+const reviewToggleBtn = document.getElementById("reviewToggleBtn");
+const reviewBarText = document.getElementById("reviewBarText");
+
+function renderReviewBar() {
+  if (!reviewBar) return;
+  const { due, total } = ReviewStore.counts();
+  reviewBar.style.display = total || reviewMode ? "flex" : "none";
+  reviewBar.classList.toggle("active", reviewMode);
+  if (reviewMode) {
+    reviewToggleBtn.textContent = "⏹ إنهاء المراجعة";
+    reviewBarText.textContent = due ? `بقي ${toArabicNumber(due)} للمراجعة الآن` : "انتهت الأسئلة المستحقة";
+  } else {
+    reviewToggleBtn.textContent = due ? `🔁 مراجعة الأخطاء (${toArabicNumber(due)})` : "🔁 مراجعة الأخطاء";
+    reviewToggleBtn.disabled = !due;
+    const later = total - due;
+    reviewBarText.textContent = due
+      ? (later ? `و${toArabicNumber(later)} لاحقًا` : "أسئلة أخطأت فيها، حان وقت مراجعتها")
+      : `${toArabicNumber(total)} في الانتظار — التالية ${ReviewStore.nextDueLabel()}`;
+  }
+}
+
+function setReviewMode(on) {
+  reviewMode = !!on;
+  renderReviewBar();
+}
+
+if (reviewToggleBtn) {
+  reviewToggleBtn.addEventListener("click", () => {
+    if (reviewMode) {
+      setReviewMode(false);
+      setStatus("انتهت المراجعة. «سؤال جديد» يعود إلى الإعدادات المختارة.");
+      return;
+    }
+    if (!ReviewStore.counts().due) return;
+    setReviewMode(true);
+    generateCard();
+  });
+}
+
 // -------- generate --------
 async function generateCard() {
   // Scroll the whole flashcard-wrap (range/score header, timer bar,
@@ -1552,10 +1924,19 @@ async function generateCard() {
   homeFlashcardWrap.scrollIntoView({ behavior: "smooth", block: "start" });
 
   try {
-    const type = qTypeSelect.value;
+    // 🔁 مراجعة الأخطاء: the next due mistake instead of a new question
+    const reviewItem = reviewMode ? ReviewStore.nextDue() : null;
+    if (reviewMode && !reviewItem) {
+      setReviewMode(false);
+      const next = ReviewStore.nextDueLabel();
+      setStatus(next ? `✅ أنهيت كل الأسئلة المستحقة الآن. المراجعة التالية ${next}.` : "✅ لا أسئلة للمراجعة — أحسنت!");
+      return;
+    }
+
+    const type = reviewItem ? reviewItem.type : qTypeSelect.value;
     const label = getTypeLabel(type);
 
-    const blockMsg = await getBlockMessageForCurrentState(type);
+    const blockMsg = reviewItem ? null : await getBlockMessageForCurrentState(type);
     if (blockMsg) {
       generateBtn.disabled = true;
       setStatus(blockMsg);
@@ -1563,11 +1944,13 @@ async function generateCard() {
       return;
     }
 
-    const range = getActiveRange();
+    const range = reviewItem ? { minP: reviewItem.minP, maxP: reviewItem.maxP } : getActiveRange();
     const { minP, maxP } = range; // non-null here — blockMsg would have caught it otherwise
 
     // show description inside card
-    cardHelp.textContent = `النوع: ${label} — ${getTypeDescription(type)}`;
+    cardHelp.textContent = reviewItem
+      ? `🔁 مراجعة (${toArabicNumber(reviewItem.stage + 1)}/${toArabicNumber(REVIEW_INTERVALS_DAYS.length)}) — ${label}: ${getTypeDescription(type)}`
+      : `النوع: ${label} — ${getTypeDescription(type)}`;
 
     setStatus("جاري التحميل...");
     lockGenerate();
@@ -1586,7 +1969,16 @@ async function generateCard() {
     // Adjacent-page types stay strictly inside [minP, maxP], and no
     // question (same ayah + same type) repeats within the next 25 —
     // both handled by the pool behind generateQuestionForTests().
-    const gen = await generateQuestionForTests(type, minP, maxP);
+    const gen = reviewItem
+      ? await generateSpecificQuestion(type, reviewItem.ref, minP, maxP)
+      : await generateQuestionForTests(type, minP, maxP, range.pages);
+    if (reviewItem && gen.status !== "ok") {
+      // can't be rebuilt any more (data changed) — drop it and move on
+      ReviewStore.remove(reviewItem.key);
+      renderReviewBar();
+      unlockGenerate();
+      return generateCard();
+    }
     if (gen.status !== "ok") {
       setCardText(qText, "تعذر إنشاء سؤال. جرّب نطاقًا أوسع أو نوعًا آخر.");
       mcqChoicesEl.innerHTML = "";
@@ -1596,6 +1988,9 @@ async function generateCard() {
     }
     const { qa, built, page } = gen;
     rememberTestKey(gen.key);
+    currentQuestionKey = gen.key;
+    currentQuestionRef = gen.ref || null;
+    currentFromReview = !!reviewItem;
 
     const isAudioOnly = !!qa.audioOnly;
     flashcard.classList.toggle("audio-question", isAudioOnly);
@@ -1659,7 +2054,7 @@ async function generateCard() {
 const CHALLENGE_TYPES = [
   "first", "last", "previous", "next", "surah", "pageNumber", "ayahCount",
   "nextPageFirst", "prevPageFirst", "pageEndToNextFirst", "pageStartToPrevLast",
-  "juz", "ayahNumber", "listenNext", "rightLeft",
+  "juz", "ayahNumber", "listenNext", "rightLeft", "completeAyah", "mutashabih",
 ];
 const CHALLENGE_MIN_TYPES = 3;
 const CHALLENGE_MIN_PLAYERS = 2;
@@ -1716,6 +2111,7 @@ let challengeLastShownType = null;   // type of the last question actually shown
 let challengeTypeBlockPosition = 0;  // 1-based position within the current type's block
 let challengeRangeMinP = 1;
 let challengeRangeMaxP = 604;
+let challengeRangePages = null;      // a Set of pages for «📗 محفوظاتي», else null
 let challengeTimerSeconds = 30;
 let challengeCurrentCorrectIndex = -1;
 let challengeCurrentAudioAyah = null;
@@ -1822,44 +2218,12 @@ function getSelectedChallengeTypes() {
 // state that has nothing to do with a challenge. This reuses the same
 // underlying range-coverage checks (ADJACENT_TYPES/juzsInRange/
 // surahsInRange/MIN_MCQ_ANSWERS) without that coupling.
-async function challengeTypeBlockMessage(type, minP, maxP) {
-  if ((ADJACENT_TYPES.has(type) || type === RIGHT_LEFT_TYPE) && maxP <= minP) {
-    return "يلزم نطاق يشمل أكثر من صفحة واحدة لهذا النوع.";
+async function challengeTypeBlockMessage(type, minP, maxP, pages) {
+  try {
+    return typeBlockFromInfo(type, await rangeInfo(minP, maxP, pages), true);
+  } catch (e) {
+    return "تعذّر تحميل بيانات القرآن.";
   }
-  if (type === "juz") {
-    const available = juzsInRange(minP, maxP);
-    if (available.length < MIN_MCQ_ANSWERS) return rangeTooNarrowMessage("خمن الجزء", available.length, "جزء", "أجزاء");
-  }
-  if (type === "pageNumber") {
-    const available = maxP - minP + 1;
-    if (available < MIN_MCQ_ANSWERS) return rangeTooNarrowMessage("خمن رقم الصفحة", available, "صفحة", "صفحات");
-  }
-  if (type === "surah") {
-    const available = await surahsInRange(minP, maxP);
-    if (available.length < MIN_MCQ_ANSWERS) return rangeTooNarrowMessage("خمن السورة", available.length, "سورة", "سور");
-  }
-  if (type === "first" || type === "last") {
-    const available = maxP - minP + 1;
-    if (available < MIN_MCQ_ANSWERS) {
-      const label = type === "first" ? "خمن الآية الأولى بالصفحة" : "خمن الآية الأخيرة بالصفحة";
-      return rangeTooNarrowMessage(label, available, "صفحة", "صفحات");
-    }
-  }
-  if (type === "ayahCount") {
-    const available = maxP - minP + 1;
-    if (available <= MIN_MCQ_ANSWERS) return rangeTooNarrowMessage("خمن كم عدد آيات الصفحة", available, "صفحة", "صفحات", MIN_MCQ_ANSWERS + 1);
-  }
-  if (type === "previous" || type === "next" || type === "listenNext") {
-    const available = await ayahsCountInRange(minP, maxP);
-    if (available < MIN_MCQ_ANSWERS) {
-      return rangeTooNarrowMessage(getTypeLabel(type), available, "آية", "آيات");
-    }
-  }
-  if (type === "ayahNumber") {
-    const available = await ayahsCountInRange(minP, maxP);
-    if (available <= MIN_AYAHNUMBER_ANSWERS) return rangeTooNarrowMessage("خمن رقم الآية بالسورة", available, "آية", "آيات", MIN_AYAHNUMBER_ANSWERS + 1);
-  }
-  return null;
 }
 
 async function refreshChallengeStartAvailability() {
@@ -1879,7 +2243,7 @@ async function refreshChallengeStartAvailability() {
   if (!msg) {
     const range = resolveRangeBounds(challengeRangeSelect.value, challengeCustomMin.value, challengeCustomMax.value);
     for (const type of selectedTypes) {
-      const blocked = await challengeTypeBlockMessage(type, range.minP, range.maxP);
+      const blocked = await challengeTypeBlockMessage(type, range.minP, range.maxP, range.pages);
       if (blocked) { msg = `"${getTypeLabel(type)}": ${blocked}`; break; }
     }
   }
@@ -1923,6 +2287,7 @@ challengeStartBtn.addEventListener("click", async () => {
   challengePlayers = challengePlayers.map((p) => ({ name: p.name.trim(), score: 0 }));
   challengeRangeMinP = range.minP;
   challengeRangeMaxP = range.maxP;
+  challengeRangePages = range.pages || null;
   challengeTimerSeconds = parseInt(challengeTimerSelect.value, 10) || 0;
   challengeCountPerType = count;
   challengeQueue = buildChallengeQueue(selectedTypes, count);
@@ -2094,7 +2459,7 @@ async function proceedToChallengeQuestion() {
     `سؤال ${challengeQuestionIndex} من ${challengeTotalQuestions} (${challengeTypeBlockPosition}/${challengeCountPerType} لهذا النوع)`;
 
   // Never repeats a question (same ayah + same type) within a challenge.
-  const gen = await generateUniqueQuestion(type, challengeRangeMinP, challengeRangeMaxP, challengeUsedKeys);
+  const gen = await generateUniqueQuestion(type, challengeRangeMinP, challengeRangeMaxP, challengeUsedKeys, challengeRangePages);
   if (gen.status !== "ok") {
     // This slot never became a real question — undo its numbering.
     challengeQuestionIndex--;
@@ -2305,6 +2670,7 @@ let duelLastConfig = null; // { rangeMin, rangeMax, timerSeconds, questionTypes,
 let duelConfigContext = null; // { kind: 'friend'|'direct', friendId, friendName } | { kind: 'quickmatch' }
 let duelStateChannel = null;
 let duelCurrentQuestion = null;
+let duelCurrentRange = null; // { minP, maxP } of the duel being played (for 🔁 مراجعة الأخطاء)
 let duelAnswered = false;
 let duelAdvancePending = false;
 let duelTimerInterval = null;
@@ -2979,6 +3345,7 @@ async function fetchDuelQuestionContent(id, index) {
 
 async function loadDuelCurrentQuestion(duel) {
   const idx = duel.current_question_index;
+  if (duel.range_min && duel.range_max) duelCurrentRange = { minP: duel.range_min, maxP: duel.range_max };
   if (duelLoadingIndex === idx) return;
   duelLoadingIndex = idx;
 
@@ -3229,6 +3596,7 @@ async function submitMyDuelAnswer(choiceIndex) {
 
   highlightDuelChoice(choiceIndex, result.isCorrect);
   showDuelRoundStatus(result);
+  rememberDuelMistake(duelCurrentQuestion, result.isCorrect);
 
   // Only advance once the round is actually decided: either I just
   // won the point, or both players have now answered and neither got
@@ -3241,6 +3609,23 @@ async function submitMyDuelAnswer(choiceIndex) {
     // short beat, then on to the result card both players see
     setTimeout(() => tryAdvanceDuelQuestion(questionIndex), 600);
   }
+}
+
+// A duel question answered wrong goes to 🔁 مراجعة الأخطاء too. The
+// server's q_ayah_number is the SHOWN ayah; for «المتشابهات» the question
+// is about the one after it.
+function rememberDuelMistake(q, isCorrect) {
+  if (isCorrect || !q || !q.q_ayah_number || !duelCurrentRange) return;
+  let ref = q.q_ayah_number;
+  if (q.question_type === "mutashabih") {
+    const [sNum, aNum] = ref.split(":").map((n) => parseInt(n, 10));
+    ref = `${sNum}:${aNum + 1}`;
+  }
+  ReviewStore.record({
+    key: questionKey(q.question_type, ref), type: q.question_type, ref, page: q.page,
+    minP: duelCurrentRange.minP, maxP: duelCurrentRange.maxP,
+  }, false, false);
+  renderReviewBar();
 }
 
 function showDuelRoundStatus(result) {
@@ -3605,6 +3990,8 @@ let selfTotal = 0;
 let selfCurrentCorrectIndex = -1;
 let selfCurrentQuestionType = null;
 let selfCurrentPage = null;
+let selfCurrentKey = null;  // for 🔁 مراجعة الأخطاء
+let selfCurrentRef = null;
 let selfAnswered = false;
 let selfHasActiveCard = false;
 
@@ -4091,6 +4478,8 @@ async function proceedToSelfQuestion() {
   selfCurrentCorrectIndex = built.correctIndex;
   selfCurrentQuestionType = type;
   selfCurrentPage = page;
+  selfCurrentKey = gen.key;
+  selfCurrentRef = gen.ref || null;
   selfCurrentAudioAyah = qa.qAyahNumber || null;
 
   const isAudioOnly = !!qa.audioOnly;
@@ -4115,6 +4504,13 @@ function finishSelfQuestion(isCorrect) {
   selfBlockAnswered += 1;
   if (isCorrect) selfBlockCorrect += 1;
   selfAttemptLog.push({ question_type: selfCurrentQuestionType, is_correct: isCorrect });
+  if (selfCurrentKey) {
+    ReviewStore.record({
+      key: selfCurrentKey, type: selfCurrentQuestionType, ref: selfCurrentRef, page: selfCurrentPage,
+      minP: selfRangeMinP, maxP: selfRangeMaxP,
+    }, isCorrect, false);
+    renderReviewBar();
+  }
   updateSelfScoreBox();
 
   const flashClass = isCorrect ? "flash-correct" : "flash-wrong";
@@ -4232,6 +4628,7 @@ renderSelfTypesGrid();
 resetSelfToSetup();
 
 generateBtn.addEventListener("click", generateCard);
+renderReviewBar();
 
 // Init
 loadGuestScore();
@@ -4298,7 +4695,34 @@ function applyRemoteSettings(settings) {
   customMinEl.value = bounds.minP;
   customMaxEl.value = bounds.maxP;
   showHideCustomRange();
+  if (typeof HifzStore !== "undefined") HifzStore.mergeRemote(settings.memorized_pages, settings.memorized_updated_at);
   settingsSyncReady = true;
+}
+
+// «📗 محفوظاتي» shows how many pages it holds, and the quiz re-checks
+// which question types fit whenever the list changes.
+function refreshMemorizedOptions() {
+  const n = typeof HifzStore !== "undefined" ? HifzStore.count() : 0;
+  document.querySelectorAll('option[value="memorized"]').forEach((opt) => {
+    opt.textContent = n ? `📗 محفوظاتي (${n} صفحة)` : "📗 محفوظاتي (لم تحدّد بعد)";
+  });
+}
+refreshMemorizedOptions();
+if (typeof HifzStore !== "undefined") {
+  let hadMemorized = HifzStore.count() > 0;
+  HifzStore.onChange(() => {
+    // the very first pages marked: 📝 اختبارات switches to them straight away
+    const hasMemorized = HifzStore.count() > 0;
+    if (!hadMemorized && hasMemorized && rangeSelect.value !== "memorized") {
+      rangeSelect.value = "memorized";
+      showHideCustomRange();
+      rangeSelect.dispatchEvent(new Event("change"));
+    }
+    hadMemorized = hasMemorized;
+    refreshMemorizedOptions();
+    if (rangeSelect.value === "memorized") refreshQuestionTypeAvailability();
+    if (challengeRangeSelect.value === "memorized") refreshChallengeStartAvailability();
+  });
 }
 
 [qTypeSelect, timerSelect, rangeSelect, customMinEl, customMaxEl].forEach((el) => {
