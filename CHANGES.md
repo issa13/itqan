@@ -1,3 +1,9 @@
+# 🔔 Fix: challenge notifications never appeared on Android — 2026-11-01
+
+- **Cause:** the notifications plugin treats every notification as an "exact alarm" unless told otherwise. The app doesn't have that permission (removed on purpose for Google Play), so instead of showing the challenge notification the plugin tried to open the "Alarms & reminders" settings screen — and nothing appeared. The ⏰ reminders were already marked as not-exact, so they weren't affected.
+- **Second cause:** the «التحديات» notification channel was only created when notifications were enabled through the app's own question. If they were turned on from the phone's settings instead, the channel didn't exist and Android silently dropped every challenge notification. It's now created before each one.
+- Phone app: `cd mobile && npm run sync`, then build.
+
 # 📘 Word meanings, متشابهات, أكمل الآية, mistake review & memorization tracker — 2026-10-30 (2)
 
 ## To do on your side (once)

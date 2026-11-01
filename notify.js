@@ -41,9 +41,7 @@ const ItqanNotify = (function () {
     if (LN) {
       try {
         result = (await LN.requestPermissions()).display;
-        if (result === "granted" && LN.createChannel) {
-          await LN.createChannel({ id: "challenges", name: "التحديات", description: "عندما يتحداك أحد في ⚔️ مباشر", importance: 5, visibility: 1, vibration: true });
-        }
+        if (result === "granted") await ensureChallengeChannel();
       } catch (e) { result = "denied"; }
     } else if (webSupported) {
       try { result = await Notification.requestPermission(); } catch (e) { result = "denied"; }
@@ -53,6 +51,18 @@ const ItqanNotify = (function () {
   }
 
   function onChange(fn) { listeners.push(fn); }
+
+  // Android drops a notification sent to a channel that doesn't exist, and
+  // the channel used to be created only when permission was given through
+  // the in-app question — not when it was turned on from the phone's
+  // settings. So it's (re)created before every challenge notification
+  // (creating an existing channel does nothing).
+  async function ensureChallengeChannel() {
+    if (!LN || !LN.createChannel) return;
+    try {
+      await LN.createChannel({ id: "challenges", name: "التحديات", description: "عندما يتحداك أحد في ⚔️ مباشر", importance: 5, visibility: 1, vibration: true });
+    } catch (e) { /* ignore — iOS */ }
+  }
 
   function wasAsked() {
     try { return localStorage.getItem(ASKED_KEY) === "1"; } catch (e) { return true; }
@@ -71,11 +81,20 @@ const ItqanNotify = (function () {
     const body = quick ? "اضغط للانضمام إلى المبارزة." : "افتح إتقان لقبول التحدي أو رفضه (صالح ١٠ دقائق).";
     try {
       if (LN) {
+        await ensureChallengeChannel();
         await LN.schedule({
           notifications: [{
             id: Number(invite.id) % 2000000000,
             title, body,
             channelId: "challenges",
+            smallIcon: "ic_stat_itqan",
+            autoCancel: true,
+            // Shown right away — no alarm. Without this the plugin treats it
+            // as an "exact alarm", and since the app doesn't have that
+            // permission (removed on purpose, see AndroidManifest.xml) it
+            // tried to open the "Alarms & reminders" settings screen instead,
+            // so the notification never appeared.
+            isExactNotification: false,
             extra: { duelId: invite.id },
           }],
         });
