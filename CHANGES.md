@@ -1,3 +1,35 @@
+# 📗 الحفظ والمراجعة — memorization & review plans, statistics, shorter ⋮ menu — 2026-11-01 (2)
+
+## To do on your side (once)
+1. Supabase → SQL Editor → run the whole `supabase-schema.sql` again (new `hifz` column).
+2. Phone app: `cd mobile && npm run sync`, then build.
+
+## 📗 الحفظ والمراجعة (⋮ → 📗, or the 📗 next to the page number)
+Four tabs:
+- **🔁 المراجعة — today's review**
+  - **🆕 القريب:** every page memorized in the last N days (7 by default, you choose), every day.
+  - **📚 البعيد:** all other memorized pages stand in a queue — the one reviewed longest ago first. Each day the first pages of the queue are due. Choose either **pages per day** (the cycle length is worked out) or **days per cycle** (the pages per day are worked out).
+  - Each page has its own ✅ (tap again to undo), opens in the Mushaf when tapped, and has 🎯 to be tested on it.
+  - Didn't finish? The pages you didn't review stay at the front of the queue, so tomorrow shows them plus new ones — always the same number of pages, nothing piles up.
+  - **➕ راجعت أكثر** lists the next pages in the queue; ticking them moves the cycle forward (shown as «⭐ زيادة»).
+  - **🎯 اختبرني** → today's pages / memorized in the last 2 days / 3 days / week / all of «القريب». It opens 📝 اختبارات with that set as the range («🔁 …» in the range list). The test doesn't mark pages as reviewed — that stays manual.
+- **🎯 الحفظ — weekly goal:** progress (e.g. ٢ / ٥), days left, this week's pages, a quick «سجّل صفحة حفظتها» (page + date, today by default), and ⚙️ pages per week + the day the week starts.
+- **🗺️ محفوظاتي:** the per-juz map, now with «🆕 حفظ جديد بتاريخ …» (today by default) or «📦 حفظ قديم (بلا تاريخ)». Pages with a date have a small dot.
+- **📊 إحصائيات:** memorized pages and %, 🔥 streak of complete review days, review completion over 30 days, cycle length, weeks the goal was met, pages never reviewed; a forecast («at your pace you finish in about …»); a 12-week memorization chart with the goal line; a calendar of review days (complete / more than required / partial / none); and a **strength map** — every memorized page coloured by how long since it was last reviewed (tap a page to open it).
+
+## In the Mushaf
+- **📗** next to the page number: memorized (records today's date); **🔁**: reviewed today. Both light up when on; tap again to undo. The page number now shows «الصفحة ٦٠٠» (the full «من ٦٠٤» is in its tooltip) to make room.
+- **⋮ menu is shorter (14 → 6):** 🔍 بحث، 📍 الذهاب إلى، 🔖 العلامات، 📗 الحفظ والمراجعة، **🎧 الاستماع…** (this page / repeat a passage / reciter / offline), **🎯 اختبار…** (page / surah / juz / ±5 / ±10).
+
+## ⏰ Reminders (phone app)
+- **🔁 مراجعة المحفوظ** — at your time each day, unless today's review is already complete («باقي ٣ من ٨»).
+- **🎯 هدف الحفظ الأسبوعي** — mid-week if less than half the goal is done, and on the week's last day if it isn't complete. Turned on automatically with your first goal.
+- Both can be set in the tab itself or in 👤 → ⚙️ → ⏰ التذكيرات. The older «📝 المراجعة» reminder (about answering questions) is now called «📝 حلّ الأسئلة».
+
+## Under the hood
+- `hifz.js` rewritten: each page keeps the day it was memorized and the day it was last reviewed, plus a review history (for the statistics) and the plan. The old list is converted automatically (those pages become «قديم»). Today's due pages are fixed once a day, so ticking pages never reshuffles the list.
+- Saved in the account in the new `user_settings.hifz` column (newest copy wins; review history from both devices is merged); `memorized_pages` is still filled for older versions of the app.
+
 # 🔔 Fix: challenge notifications never appeared on Android — 2026-11-01
 
 - **Cause:** the notifications plugin treats every notification as an "exact alarm" unless told otherwise. The app doesn't have that permission (removed on purpose for Google Play), so instead of showing the challenge notification the plugin tried to open the "Alarms & reminders" settings screen — and nothing appeared. The ⏰ reminders were already marked as not-exact, so they weren't affected.

@@ -2842,7 +2842,6 @@ html.is-offline #challengeOnlineWrap .offline-notice { width: 100%; margin: 12px
 .word-actions .btn { flex: 1 1 0; min-width: 0; }
 
 /* ===================== 📗 متابعة الحفظ ===================== */
-.quran-page-indicator.memorized::after { content: " · 📗"; }
 .hifz-modal { max-width: 480px; }
 .hifz-summary { margin-bottom: 8px; }
 .hifz-total { font-size: 14px; margin-bottom: 6px; }
@@ -2864,3 +2863,127 @@ html.is-offline #challengeOnlineWrap .offline-notice { width: 100%; margin: 12px
 .hifz-page.on { background: var(--emerald); border-color: var(--emerald); color: #fff; }
 .hifz-juz-actions { display: flex; gap: 8px; flex-wrap: wrap; padding-bottom: 4px; }
 .word-big, .word-entry-phrase { font-family: 'Amiri Quran', serif; }
+
+/* ---------- 📗 الحفظ والمراجعة — tabs, goal card, plan settings ---------- */
+.hifz-tabs { display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid rgba(var(--gold-rgb), 0.25); }
+.hifz-tab {
+  flex: 1; padding: 9px 6px; border: 0; background: none; font-family: inherit; font-size: 14px; font-weight: 700;
+  color: var(--muted); cursor: pointer; border-bottom: 2.5px solid transparent; margin-bottom: -1px;
+}
+.hifz-tab.active { color: var(--accent-text); border-bottom-color: var(--emerald); }
+.hifz-card { border: 1px solid rgba(var(--gold-rgb), 0.3); border-radius: var(--radius-sm); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.hifz-card-title { font-weight: 700; font-size: 14.5px; }
+.hifz-card-title small { font-weight: 400; color: var(--muted); font-size: 12px; }
+.hifz-card-line { font-size: 13.5px; }
+.hifz-card-line.ok { color: var(--accent-text); font-weight: 700; }
+.hifz-card > .btn { align-self: flex-start; }
+.hifz-goal-count { font-size: 14px; }
+.hifz-goal-count b { font-size: 22px; color: var(--accent-text); }
+.hifz-bar.done > i { background: var(--gold, #c9a227); }
+.hifz-week-pages { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 6px; }
+.hifz-quick-add { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 0 4px; font-size: 13.5px; }
+.hifz-quick-add label { width: 100%; font-weight: 700; }
+.hifz-quick-add input[type=number] { width: 110px; }
+.hifz-quick-add input, .hifz-mode input[type=date], .hifz-setting input, .hifz-setting select {
+  font-family: inherit; font-size: 14px; padding: 6px 8px; border-radius: 8px;
+  border: 1.5px solid rgba(var(--ink-rgb), 0.14); background: var(--card); color: var(--ink);
+}
+.hifz-settings { margin-top: 12px; border: 1px solid rgba(var(--gold-rgb), 0.25); border-radius: var(--radius-sm); padding: 6px 10px; }
+.hifz-settings > summary { cursor: pointer; font-weight: 700; font-size: 13.5px; padding: 4px 0; }
+.hifz-setting { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 8px 0; font-size: 13.5px; border-top: 1px solid rgba(var(--ink-rgb), 0.06); }
+.hifz-setting input[type=number] { width: 70px; }
+.hifz-setting small { color: var(--muted); }
+.hifz-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 10px; font-size: 13.5px; }
+.hifz-mode-opt { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.hifz-mode input[type=date]:disabled { opacity: 0.45; }
+.hifz-page { position: relative; }
+.hifz-page.dated::after {
+  content: ""; position: absolute; top: 3px; inset-inline-end: 4px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: 0.85;
+}
+
+/* ---------- 📗 / 🔁 next to the page number ---------- */
+.quran-page-center:has(.quran-page-mark) { gap: 4px; }
+.quran-page-center:has(.quran-page-mark) .quran-page-listen { padding: 5px 7px; }
+.quran-page-mark { padding: 5px 4px; min-width: 32px; font-size: 13px; flex-shrink: 0; line-height: 1; filter: grayscale(1); opacity: 0.6; }
+.quran-page-mark.on { filter: none; opacity: 1; background: var(--success-bg); border-color: rgba(var(--emerald-rgb), 0.45); }
+
+/* ---------- ⋮ → 🎧 / 🎯 sheets ---------- */
+.quran-sheet { max-width: 360px; }
+.quran-sheet .quran-menu-item { border-radius: 10px; padding: 12px; font-size: 15px; }
+
+/* ---------- 🔁 المراجعة ---------- */
+.hifz-tabs { gap: 2px; }
+.hifz-tabs .hifz-tab { font-size: 12.5px; padding: 9px 1px; white-space: nowrap; }
+.hifz-extra-badge { font-size: 12px; font-weight: 700; color: var(--accent-text); background: var(--success-bg); border-radius: 999px; padding: 2px 8px; }
+.hifz-quiz-chooser { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding: 10px; border-radius: var(--radius-sm); background: rgba(var(--gold-rgb), 0.08); }
+.hifz-quiz-chooser .btn { text-align: start; }
+.hifz-quiz-chooser-title { font-weight: 700; font-size: 13.5px; }
+.hifz-rev-section { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+.hifz-rev-title { font-weight: 700; font-size: 14px; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.hifz-rev-title small { font-weight: 400; color: var(--muted); font-size: 12px; }
+.hifz-rev-count { margin-inline-start: auto; font-size: 12.5px; color: var(--accent-text); }
+.hifz-rev-row { display: flex; align-items: center; gap: 8px; border: 1px solid rgba(var(--ink-rgb), 0.1); border-radius: 10px; padding: 6px 8px; background: var(--card); }
+.hifz-rev-row.done { background: var(--success-bg); border-color: rgba(var(--emerald-rgb), 0.35); }
+.hifz-rev-check {
+  flex-shrink: 0; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 17px; font-weight: 800; line-height: 1;
+  border: 2px solid rgba(var(--emerald-rgb), 0.55); background: var(--card); color: #fff;
+}
+.hifz-rev-row.done .hifz-rev-check { background: var(--emerald); border-color: var(--emerald); }
+.hifz-rev-open { flex: 1; min-width: 0; text-align: start; background: none; border: 0; padding: 2px 0; font-family: inherit; color: var(--ink); cursor: pointer; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; }
+.hifz-rev-open b { font-size: 14px; }
+.hifz-rev-open span { font-size: 13px; }
+.hifz-rev-open small { width: 100%; font-size: 11.5px; color: var(--muted); }
+.hifz-rev-quiz { flex-shrink: 0; padding: 5px 8px; }
+.hifz-more-btn { align-self: flex-start; }
+.hifz-far-setting { flex-direction: column; align-items: stretch; }
+.hifz-far-setting .hifz-mode-opt { margin-top: 4px; }
+.hifz-far-setting input[type=number] { width: 90px; margin-inline-start: 26px; }
+.hifz-far-setting input:disabled { opacity: 0.45; }
+.hifz-far-title { font-weight: 700; }
+.hifz-far-calc { font-size: 12.5px; color: var(--accent-text); margin-top: 4px; }
+
+/* ---------- 📊 الإحصائيات ---------- */
+.hifz-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 10px; }
+.hifz-tile { border: 1px solid rgba(var(--gold-rgb), 0.3); border-radius: var(--radius-sm); padding: 8px 6px; text-align: center; }
+.hifz-tile-v { font-size: 17px; font-weight: 800; color: var(--accent-text); }
+.hifz-tile-l { font-size: 11px; color: var(--muted); line-height: 1.35; margin-top: 2px; }
+.hifz-stat-block { margin-top: 16px; }
+.hifz-stat-title { font-weight: 700; font-size: 14px; margin-bottom: 8px; }
+.hifz-stat-title small { font-weight: 400; color: var(--muted); font-size: 11.5px; }
+.hifz-wchart { position: relative; display: flex; align-items: flex-end; gap: 4px; direction: ltr; }
+.hifz-wbar { flex: 1; display: flex; flex-direction: column; align-items: center; min-width: 0; }
+.hifz-wbar-n { height: 18px; font-size: 11px; font-weight: 700; color: var(--accent-text); }
+.hifz-wbar-col { width: 100%; height: 90px; display: flex; align-items: flex-end; background: rgba(var(--ink-rgb), 0.04); border-radius: 5px 5px 0 0; }
+.hifz-wbar-col > i { display: block; width: 100%; background: rgba(var(--emerald-rgb), 0.55); border-radius: 5px 5px 0 0; min-height: 0; }
+.hifz-wbar.met .hifz-wbar-col > i { background: var(--emerald); }
+.hifz-wbar.current .hifz-wbar-col { outline: 1.5px dashed rgba(var(--emerald-rgb), 0.5); }
+.hifz-wbar-d { height: 18px; font-size: 9.5px; color: var(--muted); white-space: nowrap; }
+.hifz-goal-line { position: absolute; left: 0; right: 0; border-top: 2px dashed rgba(var(--gold-rgb), 0.9); pointer-events: none; }
+.hifz-cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.hifz-cal-h { font-size: 11px; color: var(--muted); text-align: center; }
+.hifz-cal-d { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; border-radius: 7px; font-size: 12px; font-weight: 700; background: rgba(var(--ink-rgb), 0.05); color: var(--muted); }
+.hifz-cal-d.today { outline: 2px solid var(--accent-text); outline-offset: -2px; }
+.s-full { background: var(--emerald) !important; color: #fff !important; }
+.s-extra { background: #0a4f3a !important; color: #ffd86b !important; }
+.s-partial { background: #e8c35a !important; color: #4a3a0a !important; }
+.s-none { background: rgba(var(--ink-rgb), 0.12) !important; }
+.hifz-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 11.5px; color: var(--muted); }
+.hifz-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.hifz-legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; background: rgba(var(--ink-rgb), 0.05); }
+.hifz-map { display: flex; flex-direction: column; gap: 5px; }
+.hifz-map-row { display: flex; align-items: flex-start; gap: 6px; }
+.hifz-map-juz { flex-shrink: 0; width: 34px; font-size: 11.5px; font-weight: 700; color: var(--muted); padding-top: 1px; }
+.hifz-map-cells { display: flex; flex-wrap: wrap; gap: 3px; }
+.hifz-map-cell { width: 14px; height: 14px; border-radius: 3px; border: 0; padding: 0; cursor: pointer; }
+.hm-fresh { background: var(--emerald) !important; }
+.hm-aging { background: #e8c35a !important; }
+.hm-old { background: #c4553f !important; }
+.hm-never { background: rgba(var(--ink-rgb), 0.22) !important; }
+@media (max-width: 340px) {
+  .quran-page-nav .quran-turn-btn { width: 36px; }
+  .quran-page-center:has(.quran-page-mark) { gap: 1px; }
+  .quran-page-nav { gap: 4px; }
+  .quran-page-center:has(.quran-page-mark) .quran-page-indicator { font-size: 11.5px; }
+  .quran-page-mark { padding: 4px 2px; min-width: 0; }
+  .quran-page-center:has(.quran-page-mark) .quran-page-listen { padding: 4px 4px; }
+}

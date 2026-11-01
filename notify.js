@@ -115,6 +115,12 @@ const ItqanNotify = (function () {
   //     the app (so today's is dropped once you've practised, and nobody
   //     who stopped using the app gets nagged forever).
   //   • 🕌 سورة الكهف — every Friday morning; opens the Mushaf at الكهف.
+  //   • 🔁 مراجعة المحفوظ — hifz.js's review plan: at the chosen time on
+  //     each of the next REVIEW_DAYS days, except today once today's
+  //     review is complete (re-planned whenever a page is ticked).
+  //   • 🎯 هدف الحفظ — hifz.js's weekly goal: mid-week if less than half of
+  //     it is memorized, and on the week's last day if it isn't complete
+  //     (this week and next; re-planned whenever a page is recorded).
   // Tapping a reminder opens the matching screen.
   // A website can't do this (browsers can't schedule a notification for a
   // closed page), so the settings show a short note there instead.
@@ -125,12 +131,16 @@ const ItqanNotify = (function () {
   const ID_WIRD = 2100000001;
   const ID_KAHF = 2100000002;
   const ID_REVIEW_BASE = 2100000100; // + 0 … REVIEW_DAYS-1
+  const ID_GOAL_BASE = 2100000200;   // + 0 … 3 (2 weeks × mid-week / last day)
+  const ID_PLAN_BASE = 2100000300;   // + 0 … REVIEW_DAYS-1
   const REVIEW_DAYS = 7;
   const KAHF_PAGE = 293;
   const DEFAULT_REMINDERS = {
     wird: { on: false, time: "06:30" },
     review: { on: false, time: "20:00" },
     kahf: { on: false, time: "09:00" },
+    goal: { on: false, time: "19:00" },
+    plan: { on: false, time: "17:00" },
   };
   const REVIEW_MESSAGES = [
     ["📝 لم تراجع اليوم بعد", "بضع دقائق من الأسئلة تُثبّت حفظك — حافظ على سلسلتك 🔥"],
@@ -191,10 +201,12 @@ const ItqanNotify = (function () {
     if (!LN) return { ok: false, reason: "unsupported" };
     const ids = [ID_WIRD, ID_KAHF];
     for (let i = 0; i < REVIEW_DAYS; i++) ids.push(ID_REVIEW_BASE + i);
+    for (let i = 0; i < 4; i++) ids.push(ID_GOAL_BASE + i);
+    for (let i = 0; i < REVIEW_DAYS; i++) ids.push(ID_PLAN_BASE + i);
     try { await LN.cancel({ notifications: ids.map((id) => ({ id })) }); } catch (e) { /* nothing scheduled yet */ }
 
     const r = getReminders();
-    if (!r.wird.on && !r.review.on && !r.kahf.on) return { ok: true, count: 0 };
+    if (!r.wird.on && !r.review.on && !r.kahf.on && !r.goal.on && !r.plan.on) return { ok: true, count: 0 };
     if ((await state()) !== "granted") return { ok: false, reason: "permission" };
     await ensureReminderChannel();
 
@@ -238,6 +250,63 @@ const ItqanNotify = (function () {
           schedule: { at, allowWhileIdle: true },
           extra: { open: "home" },
         }));
+      }
+    }
+
+    const digitsAr = (n) => String(n).replace(/\d/g, (d) => "٠١٢٣٤٥٦٧٨٩"[d]);
+    if (r.plan.on && typeof HifzStore !== "undefined" && HifzStore.count()) {
+      const tp = HifzStore.todayPlan();
+      const { hour, minute } = splitTime(r.plan.time);
+      const now = new Date();
+      for (let i = 0; i < REVIEW_DAYS; i++) {
+        const at = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i, hour, minute, 0, 0);
+        if (at <= now) continue;
+        let body;
+        if (i === 0) {
+          if (!tp.dueCount || tp.doneCount >= tp.dueCount) continue; // today's done
+          const left = tp.dueCount - tp.doneCount;
+          body = tp.doneCount
+            ? `باقي ${digitsAr(left)} من ${digitsAr(tp.dueCount)} — أتمّها قبل نهاية اليوم.`
+            : `${digitsAr(tp.dueCount)} ${tp.dueCount === 1 ? "صفحة" : "صفحات"} بانتظارك — اضغط لفتح القائمة.`;
+        } else {
+          body = "صفحات مراجعة اليوم بانتظارك — اضغط لفتح القائمة.";
+        }
+        list.push(Object.assign({}, common, {
+          id: ID_PLAN_BASE + i,
+          title: "🔁 مراجعة المحفوظ",
+          body,
+          schedule: { at, allowWhileIdle: true },
+          extra: { open: "hifz", tab: "review" },
+        }));
+      }
+    }
+
+    if (r.goal.on && typeof HifzStore !== "undefined") {
+      const w = HifzStore.weekInfo();
+      const { hour, minute } = splitTime(r.goal.time);
+      const now = new Date();
+      const digits = (n) => String(n).replace(/\d/g, (d) => "٠١٢٣٤٥٦٧٨٩"[d]);
+      if (w.goal > 0) {
+        for (let k = 0; k < 2; k++) {               // this week, next week
+          const start = HifzStore.addDays(w.start, 7 * k);
+          const done = k === 0 ? w.done : 0;
+          [{ d: 3, need: Math.ceil(w.goal / 2), last: false }, { d: 6, need: w.goal, last: true }].forEach((c, ci) => {
+            if (done >= c.need) return;
+            const [y, m, d] = HifzStore.addDays(start, c.d).split("-").map(Number);
+            const at = new Date(y, m - 1, d, hour, minute, 0, 0);
+            if (at <= now) return;
+            const left = w.goal - done;
+            list.push(Object.assign({}, common, {
+              id: ID_GOAL_BASE + k * 2 + ci,
+              title: c.last ? "🎯 اليوم آخر يوم لهدف الأسبوع" : "🎯 هدف الحفظ الأسبوعي",
+              body: done
+                ? `حفظت ${digits(done)} من ${digits(w.goal)} — باقي ${digits(left)}. ${c.last ? "أتمّها اليوم بإذن الله 💪" : "ما زال في الأسبوع متّسع."}`
+                : `هدفك ${digits(w.goal)} صفحات هذا الأسبوع — ابدأ اليوم بصفحة واحدة.`,
+              schedule: { at, allowWhileIdle: true },
+              extra: { open: "hifz", tab: "plan" },
+            }));
+          });
+        }
       }
     }
 
@@ -288,6 +357,12 @@ const ItqanNotify = (function () {
         const page = parseInt(extra.page, 10);
         if (page >= 1 && page <= 604 && typeof quranGoToPage === "function") {
           try { quranGoToPage(page); } catch (e) { /* ignore */ }
+        }
+      } else if (extra && extra.open === "hifz") {
+        if (extra.tab) { try { localStorage.setItem("qf_hifz_tab", extra.tab); } catch (e) { /* ignore */ } }
+        switchView("quran");
+        if (typeof openQuranModal === "function") {
+          try { openQuranModal("quranHifzModal"); } catch (e) { /* ignore */ }
         }
       } else if (extra && extra.open === "home") {
         switchView("home");

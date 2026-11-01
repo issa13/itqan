@@ -221,6 +221,22 @@ begin
   end if;
 end $$;
 
+-- 📗 الحفظ والمراجعة (hifz.js, 2026-11): the full record — each page's
+-- memorized / last-reviewed date, the review history and the plan — as one
+-- JSON object. memorized_pages above stays for older versions of the app.
+alter table public.user_settings
+  add column if not exists hifz jsonb;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'user_settings_hifz_valid') then
+    alter table public.user_settings
+      add constraint user_settings_hifz_valid check (
+        hifz is null or (jsonb_typeof(hifz) = 'object' and pg_column_size(hifz) <= 262144)
+      );
+  end if;
+end $$;
+
 alter table public.user_settings enable row level security;
 
 drop policy if exists "Users manage their own settings" on public.user_settings;

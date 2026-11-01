@@ -439,6 +439,7 @@ function resolveRangeBounds(rangeKey, customMinRaw, customMaxRaw) {
   }
 
   if (rangeKey === "memorized") return memorizedRange();
+  if (rangeKey === "hifzset") return hifzQuizRange();
 
   switch (rangeKey) {
     case "first100": return { minP: 1, maxP: 100 };
@@ -468,6 +469,52 @@ function memorizedRange() {
   let minP = 604, maxP = 1;
   pages.forEach((p) => { if (p < minP) minP = p; if (p > maxP) maxP = p; });
   return { minP, maxP, pages };
+}
+
+// «🎯 اختبرني» in 📗 الحفظ والمراجعة (quran-reader.js → startHifzQuiz):
+// a quiz on a chosen set of pages — today's review, the last N days'
+// memorization… Shown in 📝 اختبارات's range list as «🔁 …» while chosen;
+// the set is kept on the device so a reload keeps it.
+const HIFZ_QUIZ_KEY = "qf_hifz_quiz_set";
+let hifzQuizSet = null; // { label, pages: Set }
+try {
+  const saved = JSON.parse(localStorage.getItem(HIFZ_QUIZ_KEY) || "null");
+  if (saved && Array.isArray(saved.pages) && saved.pages.length) {
+    hifzQuizSet = { label: String(saved.label || "مراجعة"), pages: new Set(saved.pages.map(Number).filter((p) => p >= 1 && p <= 604)) };
+  }
+} catch (e) { /* ignore */ }
+
+function hifzQuizRange() {
+  if (!hifzQuizSet || !hifzQuizSet.pages.size) return memorizedRange();
+  let minP = 604, maxP = 1;
+  hifzQuizSet.pages.forEach((p) => { if (p < minP) minP = p; if (p > maxP) maxP = p; });
+  return { minP, maxP, pages: hifzQuizSet.pages, label: hifzQuizSet.label };
+}
+
+function ensureHifzQuizOption() {
+  let opt = rangeSelect.querySelector('option[value="hifzset"]');
+  if (!hifzQuizSet) { if (opt) opt.remove(); return; }
+  if (!opt) {
+    opt = document.createElement("option");
+    opt.value = "hifzset";
+    const after = rangeSelect.querySelector('option[value="memorized"]');
+    rangeSelect.insertBefore(opt, after ? after.nextSibling : null);
+  }
+  opt.textContent = `🔁 ${hifzQuizSet.label} (${hifzQuizSet.pages.size} صفحة)`;
+}
+ensureHifzQuizOption();
+
+async function startHifzQuiz(pages, label) {
+  const list = Array.from(new Set(pages)).filter((p) => p >= 1 && p <= 604).sort((a, b) => a - b);
+  if (!list.length) return false;
+  hifzQuizSet = { label, pages: new Set(list) };
+  try { localStorage.setItem(HIFZ_QUIZ_KEY, JSON.stringify({ label, pages: list })); } catch (e) { /* ignore */ }
+  ensureHifzQuizOption();
+  rangeSelect.value = "hifzset";
+  showHideCustomRange();
+  await refreshQuestionTypeAvailability();
+  switchView("home");
+  return true;
 }
 
 function showHideCustomRange() {
@@ -686,6 +733,7 @@ async function refreshGenerationAvailability() {
 function updateHomeRangeChip() {
   const range = getActiveRange();
   homeRangeChip.textContent = !range ? "📖 —"
+    : range.label ? `🔁 ${range.label} (${range.pages.size})`
     : range.pages ? `📗 محفوظاتي (${range.pages.size})`
     : `📖 ${range.minP}–${range.maxP}`;
 }
@@ -4695,7 +4743,7 @@ function applyRemoteSettings(settings) {
   customMinEl.value = bounds.minP;
   customMaxEl.value = bounds.maxP;
   showHideCustomRange();
-  if (typeof HifzStore !== "undefined") HifzStore.mergeRemote(settings.memorized_pages, settings.memorized_updated_at);
+  if (typeof HifzStore !== "undefined") HifzStore.mergeRemote(settings);
   settingsSyncReady = true;
 }
 

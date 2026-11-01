@@ -646,7 +646,8 @@ async function quranGoToPage(page, options) {
   try { localStorage.setItem(QURAN_LAST_PAGE_KEY, String(page)); } catch (e) { /* ignore */ }
 
   quranPageInput.value = page;
-  quranPageIndicator.textContent = `الصفحة ${toArabicDigits(page)} من ٦٠٤`;
+  // short, to leave room for 📗 / 🔁 next to it
+  quranPageIndicator.textContent = `الصفحة ${toArabicDigits(page)}`;
   quranUpdateHifzMark();
   quranPrevBtn.disabled = page <= 1;
   quranNextBtn.disabled = page >= 604;
@@ -1950,6 +1951,7 @@ document.querySelectorAll("[data-listen-action='page']").forEach((btn) => {
   btn.addEventListener("click", () => {
     quranMenuDropdown.style.display = "none";
     quranMenuBtn.setAttribute("aria-expanded", "false");
+    closeQuranModal("quranListenSheet");
     quranListenToCurrentPage();
   });
 });
@@ -1970,7 +1972,7 @@ quranListenFromSurah.addEventListener("change", () => syncListenAyahMax(quranLis
 quranListenToSurah.addEventListener("change", () => syncListenAyahMax(quranListenToSurah, quranListenToAyah));
 
 // -------- ⋮ menu + modals --------
-const QURAN_MODAL_IDS = ["quranSearchModal", "quranGoToModal", "quranBookmarksModal", "quranReciterModal", "quranListenModal", "quranDownloadsModal", "quranDownloadOfferModal", "quranWordModal", "quranHifzModal"];
+const QURAN_MODAL_IDS = ["quranSearchModal", "quranGoToModal", "quranBookmarksModal", "quranReciterModal", "quranListenModal", "quranDownloadsModal", "quranDownloadOfferModal", "quranWordModal", "quranHifzModal", "quranListenSheet", "quranQuizSheet"];
 
 function openQuranModal(id) {
   const el = document.getElementById(id);
@@ -2038,18 +2040,25 @@ document.addEventListener("click", (e) => {
   }
 });
 
-quranMenuDropdown.querySelectorAll(".quran-menu-item").forEach((btn) => {
+// ⋮ items and the items of its two small sheets (🎧 الاستماع… / 🎯 اختبار…)
+// open their window; an item inside a sheet closes the sheet first.
+function quranCloseMenuAndSheet(btn) {
+  quranMenuDropdown.style.display = "none";
+  quranMenuBtn.setAttribute("aria-expanded", "false");
+  const sheet = btn.closest(".modal-overlay");
+  if (sheet) closeQuranModal(sheet.id);
+}
+
+document.querySelectorAll(".quran-menu-item[data-modal]").forEach((btn) => {
   btn.addEventListener("click", () => {
-    quranMenuDropdown.style.display = "none";
-    quranMenuBtn.setAttribute("aria-expanded", "false");
+    quranCloseMenuAndSheet(btn);
     openQuranModal(btn.dataset.modal);
   });
 });
 
-quranMenuDropdown.querySelectorAll(".quran-menu-item[data-quiz-action]").forEach((btn) => {
+document.querySelectorAll(".quran-menu-item[data-quiz-action]").forEach((btn) => {
   btn.addEventListener("click", async () => {
-    quranMenuDropdown.style.display = "none";
-    quranMenuBtn.setAttribute("aria-expanded", "false");
+    quranCloseMenuAndSheet(btn);
     const action = btn.dataset.quizAction;
 
     if (action === "page") {
@@ -2291,8 +2300,14 @@ async function quranOpenWordInfo(wordEl, ayahOverride) {
 }
 
 // ============================================================
-// 📗 متابعة الحفظ — mark memorized pages (data: hifz.js → HifzStore)
+// 📗 الحفظ والمراجعة (data & plans: hifz.js → HifzStore)
+//   🎯 خطة الحفظ — this week's goal, quick «سجّل صفحة», plan settings
+//   🗺️ محفوظاتي — every page per juz; new pages get a date
+//     (today by default), or «📦 قديم» without one.
 // ============================================================
+const HIFZ_DAY_NAMES = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
+const HIFZ_TAB_KEY = "qf_hifz_tab";
+
 function quranJuzPages(juz) {
   const start = JUZ_START_PAGE[juz - 1]; // from app.js
   const end = juz < 30 ? JUZ_START_PAGE[juz] - 1 : 604;
@@ -2301,19 +2316,529 @@ function quranJuzPages(juz) {
   return pages;
 }
 
+// "2026-11-06" → "الجمعة ٦/١١"
+function hifzFmtDay(key, withName = true) {
+  if (!key) return "";
+  const [y, m, d] = key.split("-").map(Number);
+  const name = HIFZ_DAY_NAMES[new Date(y, m - 1, d).getDay()];
+  return `${withName ? name + " " : ""}${toArabicDigits(d)}/${toArabicDigits(m)}`;
+}
+
+// 📗 / 🔁 next to the page number: pressed when this page is memorized /
+// reviewed today. 🔁 only shows for a memorized page.
 function quranUpdateHifzMark() {
   if (typeof HifzStore === "undefined") return;
   const on = HifzStore.has(currentQuranPage);
+  const reviewed = on && HifzStore.reviewedToday(currentQuranPage);
   quranPageIndicator.classList.toggle("memorized", on);
-  quranPageIndicator.title = on ? "صفحة محفوظة" : "";
+  quranPageIndicator.title = `الصفحة ${toArabicDigits(currentQuranPage)} من ٦٠٤${on ? " — محفوظة" : ""}`;
   const item = document.getElementById("quranHifzToggleItem");
-  if (item) item.textContent = on ? "↩️ إلغاء «حفظت هذه الصفحة»" : "✅ حفظت هذه الصفحة";
+  if (item) {
+    item.classList.toggle("on", on);
+    item.setAttribute("aria-pressed", on);
+    item.title = on ? "صفحة محفوظة — اضغط للإزالة" : "حفظت هذه الصفحة";
+    item.setAttribute("aria-label", item.title);
+  }
+  const rev = document.getElementById("quranReviewToggleBtn");
+  if (rev) {
+    rev.style.display = on ? "" : "none";
+    rev.classList.toggle("on", reviewed);
+    rev.setAttribute("aria-pressed", reviewed);
+    rev.title = reviewed ? "راجعتها اليوم — اضغط للتراجع" : "راجعت هذه الصفحة اليوم";
+    rev.setAttribute("aria-label", rev.title);
+  }
 }
+
+// surah name for a page (the surah the page starts in), for the lists
+let hifzSurahCatalog = null;
+function hifzSurahName(page) {
+  if (!hifzSurahCatalog) return "";
+  let name = "";
+  for (const s of hifzSurahCatalog) { if (s.startPage <= page) name = s.name; else break; }
+  return name.replace(/^سُورَةُ\s*/, "");
+}
+fetchSurahCatalog().then((c) => {
+  hifzSurahCatalog = (c || []).slice().sort((a, b) => a.number - b.number);
+  if (document.getElementById("quranHifzModal").style.display === "flex") renderQuranHifz();
+}).catch(() => {});
+
+// "قبل ٣ أيام"
+function hifzAgo(day) {
+  if (!day) return "";
+  const n = HifzStore.daysBetween(day, HifzStore.today());
+  if (n <= 0) return "اليوم";
+  if (n === 1) return "أمس";
+  if (n === 2) return "قبل يومين";
+  if (n <= 10) return `قبل ${toArabicDigits(n)} أيام`;
+  return `قبل ${toArabicDigits(n)} يومًا`;
+}
+
+// ---------- tabs ----------
+function hifzCurrentTab() {
+  let t = null;
+  try { t = localStorage.getItem(HIFZ_TAB_KEY); } catch (e) { /* ignore */ }
+  return document.querySelector(`[data-hifz-panel="${t}"]`) ? t : "review";
+}
+function hifzShowTab(tab) {
+  try { localStorage.setItem(HIFZ_TAB_KEY, tab); } catch (e) { /* ignore */ }
+  document.querySelectorAll("[data-hifz-tab]").forEach((b) => {
+    const on = b.dataset.hifzTab === tab;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on);
+  });
+  document.querySelectorAll("[data-hifz-panel]").forEach((p) => { p.style.display = p.dataset.hifzPanel === tab ? "" : "none"; });
+}
+document.querySelectorAll("[data-hifz-tab]").forEach((b) => b.addEventListener("click", () => {
+  hifzShowTab(b.dataset.hifzTab);
+  renderQuranHifz();
+}));
 
 function renderQuranHifz() {
   if (typeof HifzStore === "undefined") return;
+  const tab = hifzCurrentTab();
+  hifzShowTab(tab);
+  // only the visible tab is drawn (the map and the stats are big)
+  if (tab === "review") renderHifzReview();
+  else if (tab === "plan") renderHifzPlan();
+  else if (tab === "pages") renderHifzPages();
+  else if (tab === "stats") renderHifzStats();
+}
+
+// ---------- 🔁 المراجعة ----------
+let hifzMoreShown = 0; // how many of «➕ راجعت أكتر»'s pages are listed
+
+function hifzRow(page, done, note) {
+  const surah = hifzSurahName(page);
+  return `
+    <div class="hifz-rev-row${done ? " done" : ""}">
+      <button type="button" class="hifz-rev-check" data-rev-page="${page}" aria-pressed="${done}" aria-label="${done ? "راجعتها — اضغط للتراجع" : "راجعتها"}">${done ? "✓" : ""}</button>
+      <button type="button" class="hifz-rev-open" data-goto-page="${page}" title="افتح الصفحة في المصحف">
+        <b>ص ${toArabicDigits(page)}</b>${surah ? ` <span>${surah}</span>` : ""}
+        <small>${note}</small>
+      </button>
+      <button type="button" class="btn small ghost hifz-rev-quiz" data-quiz-page="${page}" title="اختبرني في هذه الصفحة" aria-label="اختبرني في هذه الصفحة">🎯</button>
+    </div>`;
+}
+
+function hifzReviewNote(page) {
+  const info = HifzStore.info(page);
+  if (info.r === HifzStore.today()) return "✅ راجعتها اليوم";
+  if (info.r) return `آخر مراجعة ${hifzAgo(info.r)}`;
+  if (info.m) return `حُفظت ${hifzAgo(info.m)}`;
+  return "لم تُراجَع بعد";
+}
+
+function renderHifzReview() {
+  const head = document.getElementById("hifzReviewHead");
+  const lists = document.getElementById("hifzReviewLists");
+  const plan = HifzStore.getPlan();
+  renderHifzReviewSettings();
+  if (!HifzStore.count()) {
+    head.innerHTML = `
+      <div class="hifz-card-title">🔁 مراجعة اليوم</div>
+      <div class="hifz-card-line">علّم الصفحات التي تحفظها أولًا، ثم تظهر هنا مراجعة كل يوم.</div>
+      <button type="button" class="btn small" data-hifz-goto-tab="pages">🗺️ علّم محفوظاتي</button>`;
+    lists.innerHTML = "";
+    document.getElementById("hifzQuizChooser").style.display = "none";
+    return;
+  }
+  const tp = HifzStore.todayPlan();
+  const pct = tp.dueCount ? Math.min(100, Math.round((tp.doneCount / tp.dueCount) * 100)) : 100;
+  const complete = tp.dueCount > 0 && tp.doneCount >= tp.dueCount;
+  head.innerHTML = `
+    <div class="hifz-card-title">🔁 مراجعة اليوم</div>
+    <div class="hifz-goal-count"><b>${toArabicDigits(tp.doneCount)}</b> / ${toArabicDigits(tp.dueCount)} ${tp.dueCount === 1 ? "صفحة" : "صفحات"}${tp.extra.length ? ` <span class="hifz-extra-badge">+${toArabicDigits(tp.extra.length)} زيادة ⭐</span>` : ""}</div>
+    <div class="hifz-bar big${complete ? " done" : ""}"><i style="width:${pct}%"></i></div>
+    ${complete ? `<div class="hifz-card-line ok">✅ أتممت مراجعة اليوم — تقبّل الله منك!</div>` : ""}
+    <button type="button" class="btn small ghost" id="hifzQuizToggle" aria-expanded="false">🎯 اختبرني</button>`;
+
+  let html = "";
+  if (tp.near.length) {
+    const n = tp.near.filter((x) => x.done).length;
+    html += `<div class="hifz-rev-section"><div class="hifz-rev-title">🆕 القريب <small>— ما حفظته في آخر ${toArabicDigits(plan.nearDays)} ${plan.nearDays === 1 ? "يوم" : "أيام"}، كل يوم</small> <span class="hifz-rev-count">${toArabicDigits(n)}/${toArabicDigits(tp.near.length)}</span></div>
+      ${tp.near.map((x) => hifzRow(x.page, x.done, x.done ? "✅ راجعتها اليوم" : `حُفظت ${hifzAgo(HifzStore.info(x.page).m)}`)).join("")}</div>`;
+  }
+  if (tp.far.length) {
+    const n = tp.far.filter((x) => x.done).length;
+    html += `<div class="hifz-rev-section"><div class="hifz-rev-title">📚 البعيد <small>— بالدور، الدورة كاملة كل ${toArabicDigits(tp.cycleDays)} ${tp.cycleDays === 1 ? "يوم" : "أيام"}</small> <span class="hifz-rev-count">${toArabicDigits(n)}/${toArabicDigits(tp.far.length)}</span></div>
+      ${tp.far.map((x) => hifzRow(x.page, x.done, hifzReviewNote(x.page))).join("")}</div>`;
+  }
+  if (tp.extra.length) {
+    html += `<div class="hifz-rev-section"><div class="hifz-rev-title">⭐ راجعت زيادة اليوم <small>— تتقدّم بها الدورة</small></div>
+      ${tp.extra.map((x) => hifzRow(x.page, true, "✅ راجعتها اليوم")).join("")}</div>`;
+  }
+  if (tp.more.length) {
+    const shown = tp.more.slice(0, hifzMoreShown);
+    html += `<div class="hifz-rev-section">
+      <button type="button" class="btn small ghost hifz-more-btn" id="hifzMoreBtn">${hifzMoreShown ? "▲ إخفاء" : "➕ راجعت أكثر"}</button>
+      ${hifzMoreShown ? `<div class="modal-hint">الصفحات التالية في الدور — علّم ما راجعته:</div>
+        ${shown.map((p) => hifzRow(p, false, hifzReviewNote(p))).join("")}
+        ${tp.more.length > hifzMoreShown ? `<button type="button" class="btn small ghost" id="hifzMoreMoreBtn">المزيد (${toArabicDigits(tp.more.length - hifzMoreShown)})</button>` : ""}` : ""}
+    </div>`;
+  }
+  if (!tp.near.length && !tp.far.length) {
+    html += `<div class="modal-hint">لا مراجعة اليوم.</div>`;
+  }
+  lists.innerHTML = html;
+}
+
+function renderHifzReviewSettings() {
+  const plan = HifzStore.getPlan();
+  const set = (id, v) => { const el = document.getElementById(id); if (document.activeElement !== el) el.value = v; };
+  set("hifzNearDays", plan.nearDays);
+  set("hifzFarPages", plan.farPages);
+  set("hifzFarDays", plan.farDays);
+  document.querySelectorAll('input[name="hifzFarMode"]').forEach((r) => { r.checked = r.value === plan.farMode; });
+  document.getElementById("hifzFarPages").disabled = plan.farMode !== "pages";
+  document.getElementById("hifzFarDays").disabled = plan.farMode !== "days";
+  const tp = HifzStore.todayPlan();
+  document.getElementById("hifzFarCalc").textContent = !tp.farCount
+    ? "لا صفحات في «البعيد» بعد."
+    : plan.farMode === "pages"
+      ? `= ${toArabicDigits(tp.farCount)} صفحة في «البعيد» ← دورة كاملة كل ${toArabicDigits(tp.cycleDays)} ${tp.cycleDays === 1 ? "يوم" : "أيام"}`
+      : `= ${toArabicDigits(tp.farCount)} صفحة في «البعيد» ← ${toArabicDigits(tp.quota)} ${tp.quota === 1 ? "صفحة" : "صفحات"} كل يوم`;
+  const native = typeof ItqanNotify !== "undefined" && ItqanNotify.remindersSupported();
+  document.getElementById("hifzPlanReminderRow").style.display = native ? "" : "none";
+  document.getElementById("hifzPlanReminderWebNote").style.display = native ? "none" : "";
+  if (native) {
+    const r = ItqanNotify.getReminders().plan;
+    document.getElementById("hifzPlanReminderOn").checked = r.on;
+    const time = document.getElementById("hifzPlanReminderTime");
+    time.value = r.time;
+    time.disabled = !r.on;
+  }
+}
+
+document.getElementById("hifzReviewHead").addEventListener("click", (e) => {
+  if (e.target.closest("#hifzQuizToggle")) {
+    const ch = document.getElementById("hifzQuizChooser");
+    const open = ch.style.display === "none";
+    ch.style.display = open ? "" : "none";
+    e.target.setAttribute("aria-expanded", open);
+  }
+});
+
+document.getElementById("hifzQuizChooser").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-hifz-quiz]");
+  if (!b) return;
+  const kind = b.dataset.hifzQuiz;
+  let pages = [], label = "";
+  if (kind === "today") {
+    const tp = HifzStore.todayPlan();
+    pages = tp.near.concat(tp.far).map((x) => x.page);
+    label = "مراجعة اليوم";
+  } else {
+    const days = kind === "near" ? HifzStore.getPlan().nearDays : parseInt(kind, 10);
+    pages = days ? HifzStore.memorizedWithin(days) : [];
+    label = kind === "near" ? "القريب" : days === 2 ? "محفوظ آخر يومين" : days === 7 ? "محفوظ آخر أسبوع" : `محفوظ آخر ${days} أيام`;
+  }
+  if (!pages.length) {
+    if (typeof showInfoToast === "function") showInfoToast(kind === "today" ? "لا صفحات للمراجعة اليوم." : "لم تسجّل حفظ صفحات بتاريخ في هذه المدة.");
+    return;
+  }
+  closeQuranModal("quranHifzModal");
+  await startHifzQuiz(pages, label);
+});
+
+document.getElementById("hifzReviewLists").addEventListener("click", async (e) => {
+  const check = e.target.closest("[data-rev-page]");
+  if (check) {
+    const p = parseInt(check.dataset.revPage, 10);
+    HifzStore.setReviewed(p, !HifzStore.reviewedToday(p));
+    return;
+  }
+  const go = e.target.closest("[data-goto-page]");
+  if (go) { closeQuranModal("quranHifzModal"); quranGoToPage(parseInt(go.dataset.gotoPage, 10)); return; }
+  const quiz = e.target.closest("[data-quiz-page]");
+  if (quiz) {
+    const p = parseInt(quiz.dataset.quizPage, 10);
+    closeQuranModal("quranHifzModal");
+    await startQuizFromQuranRange({ minP: p, maxP: p }, `اختبار صفحة ${p}`);
+    return;
+  }
+  if (e.target.closest("#hifzMoreBtn")) { hifzMoreShown = hifzMoreShown ? 0 : 10; renderHifzReview(); return; }
+  if (e.target.closest("#hifzMoreMoreBtn")) { hifzMoreShown += 10; renderHifzReview(); }
+});
+
+document.querySelector('[data-hifz-panel="review"]').addEventListener("click", (e) => {
+  const t = e.target.closest("[data-hifz-goto-tab]");
+  if (t) { hifzShowTab(t.dataset.hifzGotoTab); renderQuranHifz(); }
+});
+
+function hifzNumSetting(id, key, lo, hi) {
+  document.getElementById(id).addEventListener("change", (e) => {
+    const v = Math.max(lo, Math.min(hi, parseInt(e.target.value, 10) || lo));
+    e.target.value = v;
+    HifzStore.setPlan({ [key]: v });
+  });
+}
+hifzNumSetting("hifzNearDays", "nearDays", 0, 90);
+hifzNumSetting("hifzFarPages", "farPages", 1, 100);
+hifzNumSetting("hifzFarDays", "farDays", 1, 365);
+document.querySelectorAll('input[name="hifzFarMode"]').forEach((r) => r.addEventListener("change", () => {
+  if (r.checked) HifzStore.setPlan({ farMode: r.value });
+}));
+
+async function hifzApplyReminder(kind, patch) {
+  const res = await ItqanNotify.setReminder(kind, patch);
+  if (res && !res.ok && typeof showInfoToast === "function") {
+    showInfoToast(res.reason === "permission" ? "⚠️ الإشعارات مرفوضة — فعّلها من إعدادات الهاتف ثم أعد المحاولة." : "⚠️ تعذّر ضبط التذكير، حاول مرة أخرى.");
+  }
+  renderQuranHifz();
+  if (typeof renderReminderSettings === "function") renderReminderSettings();
+}
+document.getElementById("hifzPlanReminderOn").addEventListener("change", (e) => {
+  hifzApplyReminder("plan", { on: e.target.checked, time: document.getElementById("hifzPlanReminderTime").value });
+});
+document.getElementById("hifzPlanReminderTime").addEventListener("change", (e) => {
+  if (/^\d{2}:\d{2}$/.test(e.target.value)) hifzApplyReminder("plan", { time: e.target.value });
+});
+
+// ---------- 📊 الإحصائيات ----------
+function renderHifzStats() {
+  const box = document.getElementById("hifzStats");
+  const st = HifzStore.stats();
+  const plan = HifzStore.getPlan();
+  const t = HifzStore.today();
+  if (!st.total) {
+    box.innerHTML = `<div class="modal-hint">علّم محفوظاتك أولًا لتظهر الإحصائيات.</div>`;
+    return;
+  }
+  const pct = Math.round((st.total / 604) * 100);
+  const tile = (icon, value, label) => `<div class="hifz-tile"><div class="hifz-tile-v">${icon} ${value}</div><div class="hifz-tile-l">${label}</div></div>`;
+
+  // weeks since the first dated page (at most the 12 shown)
+  const firstDated = Array.from(HifzStore.all()).map((p) => HifzStore.info(p).m).filter(Boolean).sort()[0] || null;
+  const weeksShown = st.weeks.filter((w) => firstDated && HifzStore.addDays(w.start, 6) >= firstDated);
+  const pastWeeks = weeksShown.slice(0, -1); // the current week isn't over yet
+  const goalWeeks = plan.weeklyGoal ? pastWeeks.filter((w) => w.goalMet).length : null;
+  // projection: average of the last 4 finished weeks
+  const recent = pastWeeks.slice(-4);
+  const avg = recent.length ? recent.reduce((s, w) => s + w.count, 0) / recent.length : 0;
+  const left = 604 - st.total;
+  let projection = "";
+  if (avg > 0 && left > 0) {
+    const weeks = Math.ceil(left / avg);
+    // Arabic counted noun: 1–2 / 3–10 / 11+
+    const counted = (n, one, two, few, many) => n === 1 ? one : n === 2 ? two : n <= 10 ? `${toArabicDigits(n)} ${few}` : `${toArabicDigits(n)} ${many}`;
+    const months = Math.max(1, Math.round(weeks / 4.35));
+    const years = Math.max(1, Math.round(weeks / 52));
+    const when = weeks < 9 ? counted(weeks, "أسبوع", "أسبوعين", "أسابيع", "أسبوعًا")
+      : weeks < 104 ? `${counted(months, "شهر", "شهرين", "أشهر", "شهرًا")} تقريبًا`
+      : `${counted(years, "سنة", "سنتين", "سنوات", "سنة")} تقريبًا`;
+    projection = `<div class="hifz-card-line">📈 بمعدّلك في آخر ${toArabicDigits(recent.length)} ${recent.length <= 2 ? "أسبوع" : "أسابيع"} (${toArabicDigits(Math.round(avg * 10) / 10).replace(".", "٫")} صفحة في الأسبوع) تُتمّ حفظ القرآن كله بعد نحو ${when} بإذن الله.</div>`;
+  } else if (left === 0) {
+    projection = `<div class="hifz-card-line ok">🎉 حفظت القرآن كاملًا — بارك الله فيك وجعله حجّة لك!</div>`;
+  }
+
+  // 📈 pages memorized per week (12 weeks)
+  const maxW = Math.max(plan.weeklyGoal, ...st.weeks.map((w) => w.count), 1);
+  const bars = st.weeks.map((w, i) => {
+    const h = Math.round((w.count / maxW) * 100);
+    const current = i === st.weeks.length - 1;
+    const [, m, d] = w.start.split("-").map(Number);
+    return `<div class="hifz-wbar${current ? " current" : ""}${w.goalMet ? " met" : ""}" title="أسبوع ${hifzFmtDay(w.start, false)}: ${toArabicDigits(w.count)} صفحة">
+      <span class="hifz-wbar-n">${w.count ? toArabicDigits(w.count) : ""}</span>
+      <span class="hifz-wbar-col"><i style="height:${h}%"></i></span>
+      <span class="hifz-wbar-d">${toArabicDigits(d)}/${toArabicDigits(m)}</span>
+    </div>`;
+  }).join("");
+  const goalLine = plan.weeklyGoal ? `<div class="hifz-goal-line" style="bottom:calc(18px + ${Math.round((plan.weeklyGoal / maxW) * 90)}px)" title="الهدف"></div>` : "";
+
+  // 🗓️ review calendar: whole weeks (starting on the plan's week day), last 5
+  const firstDay = (() => {
+    let d = HifzStore.addDays(t, -34);
+    const [y, m, dd] = d.split("-").map(Number);
+    const wd = new Date(y, m - 1, dd).getDay();
+    return HifzStore.addDays(d, -((wd - plan.weekStart + 7) % 7));
+  })();
+  const byDay = {};
+  st.days.forEach((d) => { byDay[d.day] = d; });
+  let cells = "";
+  for (let i = 0; i < 7; i++) cells += `<div class="hifz-cal-h">${HIFZ_DAY_NAMES[(plan.weekStart + i) % 7].replace(/^ال/, "").slice(0, 2)}</div>`;
+  for (let d = firstDay; d <= t; d = HifzStore.addDays(d, 1)) {
+    const info = byDay[d];
+    const state = info ? info.state : "free";
+    const [, , dd] = d.split("-").map(Number);
+    const tip = info && info.due ? `${hifzFmtDay(d)}: ${toArabicDigits(info.done)} من ${toArabicDigits(info.due)}` : info && info.done ? `${hifzFmtDay(d)}: ${toArabicDigits(info.done)}` : hifzFmtDay(d);
+    cells += `<div class="hifz-cal-d s-${state}${d === t ? " today" : ""}" title="${tip}">${toArabicDigits(dd)}</div>`;
+  }
+
+  // 💪 strength map: how long since each memorized page was reviewed
+  const cycle = Math.max(1, st.cycleDays || 7);
+  let map = "";
+  for (let j = 1; j <= 30; j++) {
+    const pages = quranJuzPages(j).filter((p) => HifzStore.has(p));
+    if (!pages.length) continue;
+    map += `<div class="hifz-map-row"><span class="hifz-map-juz">ج${toArabicDigits(j)}</span><span class="hifz-map-cells">${pages.map((p) => {
+      const a = st.age[p];
+      const cls = a === null ? "hm-never" : a <= cycle ? "hm-fresh" : a <= cycle * 2 ? "hm-aging" : "hm-old";
+      const tip = a === null ? "لم تُراجَع بعد" : a === 0 ? "اليوم" : hifzAgo(HifzStore.addDays(t, -a));
+      return `<button type="button" class="hifz-map-cell ${cls}" data-goto-page="${p}" title="ص ${toArabicDigits(p)} — ${tip}" aria-label="صفحة ${toArabicDigits(p)}، ${tip}"></button>`;
+    }).join("")}</span></div>`;
+  }
+
+  box.innerHTML = `
+    <div class="hifz-tiles">
+      ${tile("📗", toArabicDigits(st.total), `صفحة محفوظة (${toArabicDigits(pct)}٪)`)}
+      ${tile("🔥", toArabicDigits(st.streak), st.streak === 1 ? "يوم مراجعة كاملة متتالٍ" : "أيام مراجعة كاملة متتالية")}
+      ${tile("✅", st.reviewRate === null ? "—" : `${toArabicDigits(st.reviewRate)}٪`, "إنجاز المراجعة (٣٠ يومًا)")}
+      ${tile("🔄", st.cycleDays ? toArabicDigits(st.cycleDays) : "—", "أيام لدورة «البعيد» كاملة")}
+      ${tile("🎯", goalWeeks === null ? "—" : `${toArabicDigits(goalWeeks)}/${toArabicDigits(pastWeeks.length)}`, plan.weeklyGoal ? "أسابيع حقّقت فيها الهدف" : "لا هدف أسبوعي")}
+      ${tile("⏳", toArabicDigits(st.neverReviewed), "صفحة لم تُراجَع بعد")}
+    </div>
+    ${projection}
+
+    <div class="hifz-stat-block">
+      <div class="hifz-stat-title">📈 الحفظ الأسبوعي <small>(آخر ١٢ أسبوعًا${plan.weeklyGoal ? `، الخط = الهدف ${toArabicDigits(plan.weeklyGoal)}` : ""})</small></div>
+      <div class="hifz-wchart">${goalLine}${bars}</div>
+    </div>
+
+    <div class="hifz-stat-block">
+      <div class="hifz-stat-title">🗓️ أيام المراجعة</div>
+      <div class="hifz-cal">${cells}</div>
+      <div class="hifz-legend">
+        <span><i class="s-full"></i>كاملة</span><span><i class="s-extra"></i>أكثر من المطلوب</span><span><i class="s-partial"></i>جزئية</span><span><i class="s-none"></i>لم تُراجع</span>
+      </div>
+    </div>
+
+    <div class="hifz-stat-block">
+      <div class="hifz-stat-title">💪 قوة الحفظ <small>(منذ آخر مراجعة لكل صفحة — اضغط صفحة لفتحها)</small></div>
+      <div class="hifz-map">${map}</div>
+      <div class="hifz-legend">
+        <span><i class="hm-fresh"></i>خلال الدورة (${toArabicDigits(cycle)} ${cycle === 1 ? "يوم" : "أيام"})</span><span><i class="hm-aging"></i>تأخّرت قليلًا</span><span><i class="hm-old"></i>متأخرة كثيرًا</span><span><i class="hm-never"></i>لم تُراجَع</span>
+      </div>
+    </div>`;
+}
+
+document.getElementById("hifzStats").addEventListener("click", (e) => {
+  const go = e.target.closest("[data-goto-page]");
+  if (go) { closeQuranModal("quranHifzModal"); quranGoToPage(parseInt(go.dataset.gotoPage, 10)); }
+});
+
+// ---------- 🎯 خطة الحفظ ----------
+function renderHifzPlan() {
+  const card = document.getElementById("hifzGoalCard");
+  const w = HifzStore.weekInfo();
+  const plan = HifzStore.getPlan();
+  const week = HifzStore.all();
+  const thisWeek = Array.from(week).filter((p) => {
+    const m = HifzStore.info(p).m;
+    return m && m >= w.start && m <= w.end;
+  });
+  const chips = thisWeek.length
+    ? `<div class="hifz-week-pages">${thisWeek.map((p) => `<button type="button" class="hifz-page on dated" data-goto-page="${p}" title="${hifzFmtDay(HifzStore.info(p).m)}">${toArabicDigits(p)}</button>`).join("")}</div>`
+    : "";
+  const range = `${hifzFmtDay(w.start)} – ${hifzFmtDay(w.end)}`;
+  if (!w.goal) {
+    card.innerHTML = `
+      <div class="hifz-card-title">🎯 هذا الأسبوع <small>(${range})</small></div>
+      <div class="hifz-card-line">حفظت <b>${toArabicDigits(w.done)}</b> ${w.done === 1 ? "صفحة" : "صفحات"} — لم تحدّد هدفًا أسبوعيًا بعد.</div>
+      <button type="button" class="btn small ghost" id="hifzSetGoalBtn">🎯 حدّد هدفًا</button>
+      ${chips}`;
+    document.getElementById("hifzSetGoalBtn").addEventListener("click", () => {
+      const det = document.getElementById("hifzPlanSettings");
+      det.open = true;
+      document.getElementById("hifzGoalInput").focus();
+    });
+  } else {
+    const pct = Math.min(100, Math.round((w.done / w.goal) * 100));
+    const left = Math.max(0, w.goal - w.done);
+    const status = left === 0
+      ? `<div class="hifz-card-line ok">✅ أتممت هدف هذا الأسبوع — بارك الله فيك!${w.done > w.goal ? ` (${toArabicDigits(w.done - w.goal)} زيادة)` : ""}</div>`
+      : `<div class="hifz-card-line">باقي <b>${toArabicDigits(left)}</b> ${left === 1 ? "صفحة" : "صفحات"}، ${w.daysLeft === 1 ? "اليوم آخر يوم" : `${toArabicDigits(w.daysLeft)} أيام متبقية`} (حتى ${hifzFmtDay(w.end)})</div>`;
+    card.innerHTML = `
+      <div class="hifz-card-title">🎯 هدف هذا الأسبوع <small>(${range})</small></div>
+      <div class="hifz-goal-count"><b>${toArabicDigits(w.done)}</b> / ${toArabicDigits(w.goal)} صفحات</div>
+      <div class="hifz-bar big${left === 0 ? " done" : ""}"><i style="width:${pct}%"></i></div>
+      ${status}
+      ${chips}`;
+  }
+  card.querySelectorAll("[data-goto-page]").forEach((b) => b.addEventListener("click", () => {
+    closeQuranModal("quranHifzModal");
+    quranGoToPage(parseInt(b.dataset.gotoPage, 10));
+  }));
+
+  // settings (don't overwrite a field while it's being typed in)
+  const goalInput = document.getElementById("hifzGoalInput");
+  if (document.activeElement !== goalInput) goalInput.value = plan.weeklyGoal;
+  document.getElementById("hifzWeekStart").value = String(plan.weekStart);
+  const dateInput = document.getElementById("hifzQuickAddDate");
+  if (!dateInput.value) dateInput.value = HifzStore.today();
+  dateInput.max = HifzStore.today();
+
+  const native = typeof ItqanNotify !== "undefined" && ItqanNotify.remindersSupported();
+  document.getElementById("hifzGoalReminderRow").style.display = native ? "" : "none";
+  document.getElementById("hifzGoalReminderHint").style.display = native ? "" : "none";
+  document.getElementById("hifzGoalReminderWebNote").style.display = native ? "none" : "";
+  if (native) {
+    const r = ItqanNotify.getReminders().goal;
+    document.getElementById("hifzGoalReminderOn").checked = r.on;
+    const time = document.getElementById("hifzGoalReminderTime");
+    time.value = r.time;
+    time.disabled = !r.on;
+  }
+}
+
+document.getElementById("hifzGoalInput").addEventListener("change", async (e) => {
+  const before = HifzStore.getPlan().weeklyGoal;
+  const v = Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0));
+  e.target.value = v;
+  HifzStore.setPlan({ weeklyGoal: v });
+  // first goal in the phone app → offer the reminder straight away
+  if (!before && v && typeof ItqanNotify !== "undefined" && ItqanNotify.remindersSupported() && !ItqanNotify.getReminders().goal.on) {
+    const res = await ItqanNotify.setReminder("goal", { on: true });
+    if (res && res.ok && typeof showInfoToast === "function") showInfoToast("⏰ سنذكّرك إن تأخرت عن هدف الأسبوع — يمكنك تغيير ذلك هنا.");
+    renderHifzPlan();
+  }
+});
+document.getElementById("hifzWeekStart").addEventListener("change", (e) => {
+  HifzStore.setPlan({ weekStart: parseInt(e.target.value, 10) });
+});
+async function hifzApplyGoalReminder(patch) {
+  const res = await ItqanNotify.setReminder("goal", patch);
+  if (res && !res.ok && typeof showInfoToast === "function") {
+    showInfoToast(res.reason === "permission" ? "⚠️ الإشعارات مرفوضة — فعّلها من إعدادات الهاتف ثم أعد المحاولة." : "⚠️ تعذّر ضبط التذكير، حاول مرة أخرى.");
+  }
+  renderHifzPlan();
+  if (typeof renderReminderSettings === "function") renderReminderSettings();
+}
+document.getElementById("hifzGoalReminderOn").addEventListener("change", (e) => {
+  hifzApplyGoalReminder({ on: e.target.checked, time: document.getElementById("hifzGoalReminderTime").value });
+});
+document.getElementById("hifzGoalReminderTime").addEventListener("change", (e) => {
+  if (/^\d{2}:\d{2}$/.test(e.target.value)) hifzApplyGoalReminder({ time: e.target.value });
+});
+
+document.getElementById("hifzQuickAddForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const input = document.getElementById("hifzQuickAddPage");
+  const page = parseInt(input.value, 10);
+  if (!(page >= 1 && page <= 604)) { input.focus(); return; }
+  const date = document.getElementById("hifzQuickAddDate").value || HifzStore.today();
+  const was = HifzStore.has(page);
+  HifzStore.setMany([page], true, date);
+  input.value = "";
+  if (typeof showInfoToast === "function") {
+    showInfoToast(was
+      ? `📅 تاريخ حفظ الصفحة ${toArabicDigits(page)}: ${hifzFmtDay(date)}`
+      : `✅ الصفحة ${toArabicDigits(page)} ضمن محفوظاتك (${hifzFmtDay(date)})`);
+  }
+});
+
+// ---------- 🗺️ محفوظاتي ----------
+function hifzMarkDate() {
+  const mode = document.querySelector('input[name="hifzMarkMode"]:checked');
+  if (mode && mode.value === "old") return null;
+  return document.getElementById("hifzMarkDate").value || HifzStore.today();
+}
+
+function renderHifzPages() {
   const summary = document.getElementById("quranHifzSummary");
   const list = document.getElementById("quranHifzList");
+  const dateInput = document.getElementById("hifzMarkDate");
+  if (!dateInput.value) dateInput.value = HifzStore.today();
+  dateInput.max = HifzStore.today();
   const openJuz = new Set(Array.from(list.querySelectorAll("details[open]")).map((d) => d.dataset.juz));
   const total = HifzStore.count();
   const pct = Math.round((total / 604) * 100);
@@ -2324,8 +2849,11 @@ function renderQuranHifz() {
     const done = pages.filter((p) => HifzStore.has(p)).length;
     if (done === pages.length) fullJuz++;
     const jp = Math.round((done / pages.length) * 100);
-    const chips = pages.map((p) =>
-      `<button type="button" class="hifz-page${HifzStore.has(p) ? " on" : ""}" data-page="${p}" aria-pressed="${HifzStore.has(p)}">${toArabicDigits(p)}</button>`).join("");
+    const chips = pages.map((p) => {
+      const info = HifzStore.info(p);
+      const title = info ? (info.m ? `حُفظت ${hifzFmtDay(info.m)}` : "حفظ قديم") : "";
+      return `<button type="button" class="hifz-page${info ? " on" : ""}${info && info.m ? " dated" : ""}" data-page="${p}" aria-pressed="${!!info}" title="${title}">${toArabicDigits(p)}</button>`;
+    }).join("");
     rows += `
       <details class="hifz-juz" data-juz="${j}"${openJuz.has(String(j)) ? " open" : ""}>
         <summary>
@@ -2341,20 +2869,30 @@ function renderQuranHifz() {
       </details>`;
   }
   summary.innerHTML = `
-    <div class="hifz-total"><b>${toArabicDigits(total)}</b> صفحة من ٦٠٤ (${toArabicDigits(pct)}٪) · ${toArabicDigits(fullJuz)} جزء كامل</div>
+    <div class="hifz-total"><b>${toArabicDigits(total)}</b> صفحة من ٦٠٤ (${toArabicDigits(pct)}٪)، ${toArabicDigits(fullJuz)} جزء كامل</div>
     <div class="hifz-bar big"><i style="width:${pct}%"></i></div>`;
   list.innerHTML = rows;
 }
 
+document.querySelectorAll('input[name="hifzMarkMode"]').forEach((r) => r.addEventListener("change", () => {
+  document.getElementById("hifzMarkDate").disabled = hifzMarkDate() === null;
+}));
+
 document.getElementById("quranHifzList").addEventListener("click", (e) => {
   const pageBtn = e.target.closest(".hifz-page");
-  if (pageBtn) { HifzStore.toggle(parseInt(pageBtn.dataset.page, 10)); return; }
+  if (pageBtn) { HifzStore.toggle(parseInt(pageBtn.dataset.page, 10), hifzMarkDate()); return; }
   const all = e.target.closest("[data-juz-all]");
-  if (all) { HifzStore.setMany(quranJuzPages(parseInt(all.dataset.juzAll, 10)), true); return; }
+  if (all) {
+    // only the pages not marked yet get the chosen date
+    const pages = quranJuzPages(parseInt(all.dataset.juzAll, 10)).filter((p) => !HifzStore.has(p));
+    HifzStore.setMany(pages, true, hifzMarkDate());
+    return;
+  }
   const none = e.target.closest("[data-juz-none]");
   if (none) HifzStore.setMany(quranJuzPages(parseInt(none.dataset.juzNone, 10)), false);
 });
 
+// 📗 next to the page number — memorized today (tap again to remove)
 document.getElementById("quranHifzToggleItem").addEventListener("click", () => {
   const on = HifzStore.toggle(currentQuranPage);
   if (typeof showInfoToast === "function") {
@@ -2362,10 +2900,31 @@ document.getElementById("quranHifzToggleItem").addEventListener("click", () => {
   }
 });
 
+// 🔁 next to the page number — reviewed today (tap again to undo)
+document.getElementById("quranReviewToggleBtn").addEventListener("click", () => {
+  if (!HifzStore.has(currentQuranPage)) return;
+  const on = !HifzStore.reviewedToday(currentQuranPage);
+  HifzStore.setReviewed(currentQuranPage, on);
+  if (typeof showInfoToast === "function") {
+    if (on) {
+      const tp = HifzStore.todayPlan();
+      showInfoToast(`🔁 راجعت الصفحة ${toArabicDigits(currentQuranPage)} — مراجعة اليوم ${toArabicDigits(tp.doneCount)}/${toArabicDigits(tp.dueCount)}`);
+    } else {
+      showInfoToast("أُلغي تسجيل مراجعة هذه الصفحة اليوم");
+    }
+  }
+});
+
 if (typeof HifzStore !== "undefined") {
+  let replanTimer = null;
   HifzStore.onChange(() => {
     quranUpdateHifzMark();
     if (document.getElementById("quranHifzModal").style.display === "flex") renderQuranHifz();
+    // the goal reminders depend on how much was memorized this week
+    if (typeof ItqanNotify !== "undefined" && ItqanNotify.remindersSupported()) {
+      clearTimeout(replanTimer);
+      replanTimer = setTimeout(() => ItqanNotify.replanReminders(), 1000);
+    }
   });
 }
 quranUpdateHifzMark();

@@ -232,21 +232,24 @@ async function saveRemoteSettings(settings) {
   if (error) console.error("saveRemoteSettings error", error);
 }
 
-// 📗 متابعة الحفظ (hifz.js): the memorized pages, saved with the
-// settings row so another device gets the same list.
-async function saveMemorizedPages(pages, updatedAtIso) {
+// 📗 الحفظ والمراجعة (hifz.js): the whole record (pages with their
+// memorized / reviewed dates, review history, plan) in `hifz`, plus the
+// plain page list in `memorized_pages` for older versions of the app —
+// saved with the settings row so another device gets the same.
+async function saveHifz(doc, pages, updatedAtIso) {
   if (!sb || !currentUser) return;
   if (typeof Net !== "undefined" && !Net.isOnline()) return; // sent again on the next change / sign-in
   const { error } = await sb.from("user_settings").upsert(
     {
       user_id: currentUser.id,
+      hifz: doc,
       memorized_pages: pages,
       memorized_updated_at: updatedAtIso,
       updated_at: new Date().toISOString(),
     },
     { onConflict: "user_id" }
   );
-  if (error) console.error("saveMemorizedPages error", error);
+  if (error) console.error("saveHifz error", error);
 }
 
 // Partial upsert: only touches active_session_id, leaves the rest of
