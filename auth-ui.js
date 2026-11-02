@@ -114,6 +114,16 @@ function switchView(name, options) {
   if (!appViews[name]) return;
   options = options || {};
   const changed = name !== currentViewName;
+  // a form with unsaved changes (📗 حفظي) asks «حفظ / تجاهل / البقاء» first;
+  // the back button then has to put this tab's address back
+  if (changed && !options.force && typeof window.qfCanLeaveView === "function") {
+    const from = currentViewName;
+    const ok = window.qfCanLeaveView(() => switchView(name, { force: true }));
+    if (!ok) {
+      if (options.fromHistory) { try { history.pushState({ view: from }, "", "#" + from); } catch (e) { /* ignore */ } }
+      return;
+    }
+  }
   currentViewName = name;
 
   // Each tab is its own URL hash (#home, #profile …): the browser/phone
@@ -152,7 +162,7 @@ function switchView(name, options) {
   else if (name === "friends") { showFriendsListSection(); loadFriendsModal(); }
   else if (name === "leaderboard") loadLeaderboardView();
   else if (name === "quran" && typeof enterQuranTab === "function") enterQuranTab();
-  else if (name === "hifz" && typeof renderHifzView === "function") renderHifzView();
+  else if (name === "hifz" && typeof enterHifzView === "function") enterHifzView(changed);
 }
 
 bottomNavButtons.forEach((btn) => {

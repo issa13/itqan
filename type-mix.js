@@ -149,6 +149,19 @@ function createTypeModePicker(opts) {
     total: () => state.total,
     groups: () => state.total / TYPE_MIX_GROUP,
     excluded: () => state.excluded.slice(),
+    setTotal(n) {
+      if (!TYPE_MIX_TOTALS.includes(Number(n))) return;
+      state.total = Number(n);
+      totalSel.value = String(state.total);
+      save();
+      changed();
+    },
+    setExcluded(list) {
+      state.excluded = (list || []).filter((t) => CHALLENGE_TYPES.includes(t)).slice(0, TYPE_MIX_MAX_EXCLUDED);
+      save();
+      renderExclude();
+      changed();
+    },
     setMode(mode) {
       state.mode = mode === "manual" ? "manual" : "random";
       save();

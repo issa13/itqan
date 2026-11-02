@@ -2309,34 +2309,13 @@ function quranJuzPages(juz) {
   return pages;
 }
 
-// 📗 / 🔁 next to the page number: pressed when this page is memorized /
-// reviewed (today, or the day being recorded in 🔁 review mode). 🔁 only
-// shows for a memorized page. Also refreshes the review-mode bar.
+// «سجّل هذه الصفحة» next to the page number and the bar of today's pages
+// (both drawn by hifz-ui.js → hifzSyncMushaf) — refreshed on every page turn.
 function quranUpdateHifzMark() {
   if (typeof HifzStore === "undefined") return;
-  const day = typeof hifzActiveReviewDay === "function" ? hifzActiveReviewDay() : HifzStore.today();
-  const isToday = day === HifzStore.today();
   const on = HifzStore.has(currentQuranPage);
-  const reviewed = on && HifzStore.isReviewedOn(currentQuranPage, day);
   quranPageIndicator.classList.toggle("memorized", on);
   quranPageIndicator.title = `الصفحة ${toArabicDigits(currentQuranPage)} من ٦٠٤${on ? " — محفوظة" : ""}`;
-  const item = document.getElementById("quranHifzToggleItem");
-  if (item) {
-    item.classList.toggle("on", on);
-    item.setAttribute("aria-pressed", on);
-    item.title = on ? "صفحة محفوظة — اضغط للإزالة" : "حفظت هذه الصفحة";
-    item.setAttribute("aria-label", item.title);
-  }
-  const rev = document.getElementById("quranReviewToggleBtn");
-  if (rev) {
-    rev.style.display = on ? "" : "none";
-    rev.classList.toggle("on", reviewed);
-    rev.setAttribute("aria-pressed", reviewed);
-    rev.title = reviewed
-      ? (isToday ? "راجعتها اليوم — اضغط للتراجع" : "مسجّلة لذلك اليوم — اضغط للتراجع")
-      : (isToday ? "راجعت هذه الصفحة اليوم" : "راجعتها في اليوم الذي تسجّله");
-    rev.setAttribute("aria-label", rev.title);
-  }
-  if (typeof hifzSyncReviewBar === "function") hifzSyncReviewBar();
+  if (typeof hifzSyncMushaf === "function") hifzSyncMushaf();
 }
 quranUpdateHifzMark();

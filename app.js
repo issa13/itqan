@@ -480,7 +480,11 @@ let hifzQuizSet = null; // { label, pages: Set }
 try {
   const saved = JSON.parse(localStorage.getItem(HIFZ_QUIZ_KEY) || "null");
   if (saved && Array.isArray(saved.pages) && saved.pages.length) {
-    hifzQuizSet = { label: String(saved.label || "مراجعة"), pages: new Set(saved.pages.map(Number).filter((p) => p >= 1 && p <= 604)) };
+    hifzQuizSet = {
+      label: String(saved.label || "مراجعة"), pages: new Set(saved.pages.map(Number).filter((p) => p >= 1 && p <= 604)),
+      track: typeof saved.track === "string" ? saved.track : null,
+      excluded: Array.isArray(saved.excluded) ? saved.excluded.map(String) : [],
+    };
   }
 } catch (e) { /* ignore */ }
 
@@ -512,23 +516,59 @@ function ensureHifzQuizOption() {
 ensureHifzQuizOption();
 
 // Remembers a set of pages as «🔁 label» → false if it's empty.
-function setHifzQuizSet(pages, label) {
+// opts.track: the answers count as today's test in 📗 حفظي («اختبر نفسك»);
+// opts.excluded: question types left out of «🎲 عشوائي».
+function setHifzQuizSet(pages, label, opts) {
   const list = Array.from(new Set(pages)).map(Number).filter((p) => p >= 1 && p <= 604).sort((a, b) => a - b);
   if (!list.length) return false;
-  hifzQuizSet = { label, pages: new Set(list) };
-  try { localStorage.setItem(HIFZ_QUIZ_KEY, JSON.stringify({ label, pages: list })); } catch (e) { /* ignore */ }
+  opts = opts || {};
+  hifzQuizSet = {
+    label, pages: new Set(list),
+    track: opts.track ? (typeof HifzStore !== "undefined" ? HifzStore.today() : null) : null,
+    excluded: Array.isArray(opts.excluded) ? opts.excluded.filter((t) => CHALLENGE_TYPES.includes(t)) : [],
+  };
+  try { localStorage.setItem(HIFZ_QUIZ_KEY, JSON.stringify({ label, pages: list, track: hifzQuizSet.track, excluded: hifzQuizSet.excluded })); } catch (e) { /* ignore */ }
   ensureHifzQuizOption();
   return true;
 }
 
-// 📗 حفظي → «📝 اختبار تدريبي»: 📝 اختبارات on these pages.
-async function startHifzQuiz(pages, label) {
-  if (!setHifzQuizSet(pages, label)) return false;
+// 📗 حفظي → «📝 تدريب»: 📝 اختبارات on these pages, types «🎲 عشوائي».
+async function startHifzQuiz(pages, label, opts) {
+  if (!setHifzQuizSet(pages, label, opts)) return false;
   rangeSelect.value = "hifzset";
+  qTypeSelect.value = PRACTICE_RANDOM_TYPE;
+  cardHelp.textContent = `النوع: ${getTypeLabel(PRACTICE_RANDOM_TYPE)} — ${getTypeDescription(PRACTICE_RANDOM_TYPE)}`;
   showHideCustomRange();
   await refreshQuestionTypeAvailability();
   switchView("home");
   return true;
+}
+
+// «🎲 عشوائي» in 📝 اختبارات: each question a type that fits the pages,
+// not the same as the last one when there's a choice (and none of the
+// types left out in 📗 حفظي's «خيارات» for its own page sets).
+const PRACTICE_RANDOM_TYPE = "random";
+let practiceLastRandomType = null;
+async function pickPracticeRandomType() {
+  const range = getActiveRange();
+  let info = null;
+  try { info = range ? await rangeInfo(range.minP, range.maxP, range.pages) : null; } catch (e) { info = null; }
+  if (!info || info.empty) return "first"; // the usual message explains what's missing
+  const excluded = rangeSelect.value === "hifzset" && hifzQuizSet ? (hifzQuizSet.excluded || []) : [];
+  let fit = CHALLENGE_TYPES.filter((t) => !excluded.includes(t) && !typeBlockFromInfo(t, info, false));
+  if (!fit.length) fit = CHALLENGE_TYPES.filter((t) => !typeBlockFromInfo(t, info, false));
+  if (!fit.length) return "first";
+  const others = fit.filter((t) => t !== practiceLastRandomType);
+  const pool = others.length ? others : fit;
+  practiceLastRandomType = pool[Math.floor(Math.random() * pool.length)];
+  return practiceLastRandomType;
+}
+
+// An answer on a page set started from 📗 حفظي today → today's test there.
+function hifzTrackAnswer(isCorrect, fromSet) {
+  if (!fromSet || !hifzQuizSet || !hifzQuizSet.track || typeof HifzStore === "undefined") return;
+  if (hifzQuizSet.track !== HifzStore.today()) return;
+  HifzStore.addTestAnswer(isCorrect);
 }
 
 function showHideCustomRange() {
@@ -646,12 +686,16 @@ async function rangeInfo(minP, maxP, pages) {
   return info;
 }
 
-const MEMORIZED_EMPTY_MESSAGE = "لم تحدّد صفحاتك المحفوظة بعد. افتح 📖 القرآن ← ⋮ ← 📗 متابعة الحفظ وحدّد ما حفظته، أو اختر نطاقًا آخر.";
+const MEMORIZED_EMPTY_MESSAGE = "لم تحدّد صفحاتك المحفوظة بعد. افتح «📗 حفظي» وحدّد ما حفظته، أو اختر نطاقًا آخر.";
 
 // The one set of rules for every mode. `short` = the compact wording used
 // by the challenge setup screens. Returns a message, or null when fine.
 function typeBlockFromInfo(type, info, short) {
   if (info.empty) return MEMORIZED_EMPTY_MESSAGE;
+  // «🎲 عشوائي» (📝 اختبارات): fine as long as one type fits
+  if (type === PRACTICE_RANDOM_TYPE) {
+    return CHALLENGE_TYPES.some((t) => !typeBlockFromInfo(t, info, short)) ? null : typeBlockFromInfo("first", info, short);
+  }
   if (ADJACENT_TYPES.has(type) && !info.adjacent) {
     if (info.isSet) return "يلزم صفحتان متتاليتان على الأقل ضمن صفحاتك المحفوظة لهذا النوع.";
     return short
@@ -1066,6 +1110,7 @@ function choiceFontSize(text) {
 // -------- descriptions inside card --------
 function getTypeDescription(type) {
   switch (type) {
+    case "random": return "في كل سؤال نوع مختلف يُختار عشوائيًا من الأنواع المناسبة لهذه الصفحات.";
     case "first": return "سيظهر لك آية من نفس الصفحة، والمطلوب أن تتذكر الآية الأولى في هذه الصفحة.";
     case "last": return "سيظهر لك آية من نفس الصفحة، والمطلوب أن تتذكر الآية الأخيرة في هذه الصفحة.";
     case "previous": return "سيظهر لك آية، والمطلوب أن تتذكر الآية التي تسبقها في نفس الصفحة.";
@@ -1089,6 +1134,7 @@ function getTypeDescription(type) {
 
 function getTypeLabel(type) {
   switch (type) {
+    case "random": return "🎲 عشوائي";
     case "first": return "خمن الآية الأولى بالصفحة";
     case "last": return "خمن الآية الأخيرة بالصفحة";
     case "previous": return "خمن الآية السابقة";
@@ -1837,6 +1883,7 @@ function finishQuestion(isCorrect) {
     }, isCorrect, currentFromReview);
     renderReviewBar();
   }
+  if (!currentFromReview) hifzTrackAnswer(isCorrect, rangeSelect.value === "hifzset");
 
   if (typeof recordAttempt === "function" && currentQuestionType) {
     // Read from the browser's own clock (not UTC) so the
@@ -2005,7 +2052,8 @@ async function generateCard() {
       return;
     }
 
-    const type = reviewItem ? reviewItem.type : qTypeSelect.value;
+    let type = reviewItem ? reviewItem.type : qTypeSelect.value;
+    if (type === PRACTICE_RANDOM_TYPE) type = await pickPracticeRandomType();
     const label = getTypeLabel(type);
 
     const blockMsg = reviewItem ? null : await getBlockMessageForCurrentState(type);
@@ -4135,6 +4183,7 @@ let selfBlockAnswered = 0;           // answers / correct answers in the block i
 let selfBlockCorrect = 0;
 let selfAttemptLog = [];             // [{ question_type, is_correct }] for this page-load — feeds the guest results breakdown
 let selfPendingRecords = [];         // in-flight recordAttempt() calls, awaited before the results are fetched
+let selfTracksHifz = false;          // this quiz was started on a 📗 حفظي page set → its answers are today's test
 let selfConsecutiveFailures = 0;     // guards against an endless loop if question generation keeps failing
 
 const SELF_USED_KEYS_PREFIX = "qf_self_used_";
@@ -4285,6 +4334,7 @@ selfStartBtn.addEventListener("click", async () => {
   selfRangeMinP = range.minP;
   selfRangeMaxP = range.maxP;
   selfRangePages = range.pages && range.pages.size ? new Set(range.pages) : null;
+  selfTracksHifz = selfRangeSelect.value === "hifzset";
   selfTimerSeconds = parseInt(selfTimerSelect.value, 10) || 0;
   selfSelectedTypes = selectedTypes;
   selfCountPerType = countPerType;
@@ -4646,6 +4696,7 @@ function finishSelfQuestion(isCorrect) {
   selfBlockAnswered += 1;
   if (isCorrect) selfBlockCorrect += 1;
   selfAttemptLog.push({ question_type: selfCurrentQuestionType, is_correct: isCorrect });
+  hifzTrackAnswer(isCorrect, selfTracksHifz);
   if (selfCurrentKey) {
     ReviewStore.record({
       key: selfCurrentKey, type: selfCurrentQuestionType, ref: selfCurrentRef, page: selfCurrentPage,
@@ -4778,8 +4829,8 @@ if (selfPresetNote) {
 }
 selfRangeSelect.addEventListener("change", () => { if (selfRangeSelect.value !== "hifzset") hideSelfPresetNote(); });
 
-async function openSelfChallengeOnPages(pages, label) {
-  if (!setHifzQuizSet(pages, label)) return false;
+async function openSelfChallengeOnPages(pages, label, opts) {
+  if (!setHifzQuizSet(pages, label, opts)) return false;
   switchView("challenge");
   challengeModeToggle.querySelectorAll(".challenge-mode-btn").forEach((b) => b.classList.toggle("active", b.dataset.mode === "self"));
   challengeOfflineWrap.style.display = "none";
@@ -4794,8 +4845,12 @@ async function openSelfChallengeOnPages(pages, label) {
   }
   selfRangeSelect.value = "hifzset";
   showHideSelfCustomRange();
-  if (selfTypePicker) selfTypePicker.setMode("random"); // also re-checks the start button
-  else refreshSelfStartAvailability();
+  if (selfTypePicker) {
+    // 📗 حفظي's «خيارات» (number of questions, types left out)
+    if (opts && opts.total) selfTypePicker.setTotal(opts.total);
+    if (opts && Array.isArray(opts.excluded)) selfTypePicker.setExcluded(opts.excluded);
+    selfTypePicker.setMode("random"); // also re-checks the start button
+  } else refreshSelfStartAvailability();
   if (selfPresetNote) {
     selfPresetNote.querySelector("[data-text]").textContent =
       `⏱️ تحدٍّ مع نفسك على «${label}» (${typeof hifzPagesWord === "function" ? hifzPagesWord(hifzQuizSet.pages.size) : hifzQuizSet.pages.size}). اختر عدد الأسئلة والمؤقت إن شئت، ثم اضغط «ابدأ الاختبار». النتيجة تُحفظ في «📊 الجلسات».`;

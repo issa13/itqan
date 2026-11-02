@@ -1,3 +1,52 @@
+# 📗 حفظي redesigned — one card, one button «كمّل» — 2026-11-03
+
+## To do on your side (once)
+1. Nothing in Supabase: everything new lives inside `qf_hifz_v2` (synced as `user_settings.hifz`, as before). Old data still opens.
+2. Phone app: `cd mobile && npm run sync`, then build (no new files).
+
+## First time: a 4-step setup (one question per screen)
+- «الخطوة ٢ من ٤», «رجوع / التالي», and on the summary «حفظ الخطة / إلغاء». **Nothing is written before «حفظ الخطة».**
+1. **ماذا تحفظ الآن؟** — nothing yet · whole juz / surahs · from page to page. Pages already in the app stay selected and are never removed.
+2. **الحفظ الجديد — أين وصلت؟** — in the middle of a cycle / starting now / review only; direction (from الفاتحة or from الناس); the next page (filled in, and «هذه الصفحة محفوظة — أقرب صفحة غير محفوظة: ٤٧ [اعتمد]»); in the middle of a cycle: «the last N pages, within the last K days» → they get approximate dates and go straight into «مراجعة آخر ما حفظت»; the weekly goal.
+3. **المراجعة — أين وصلت؟** — how many days «آخر ما حفظت» is reviewed; «القديم» as pages a day or «a full round in N days» with the result shown live («= ٤ صفحات يوميًّا، ختمة كل ٣٠ يومًا»); in the middle of a round → from which page (a page you haven't memorized moves to the nearest one, with a note), optional round number.
+4. **الملخص** in plain sentences («اليوم: تحفظ صفحة ٤٥، وتراجع ٢ من آخر ما حفظت + ٤ من القديم (صفحات ١٢–١٥)»).
+- The setup day is kept (`setupOn`): days before it are never «missed», and the first week only asks for its share of the goal (3 days of 7 → 3/7, rounded up).
+- Data from the previous version (no `setupOn`) gets the setup filled in from what's there, with «احتفظ بإعداداتي» to skip it.
+
+## Three tabs: ☀️ اليوم · 🗒️ خطتي · 📈 تقدّمي (always opens on اليوم; a notification can open another)
+- **اليوم:** a card that answers «what's left today?» — «احفظ: صفحة ٤٥», «راجع: ٦ صفحات ✅✅⬜⬜⬜⬜ ٢ من ٦» — and ONE button whose text follows the step: «ابدأ حفظ صفحة ٤٥» → «راجع صفحة ١٤» → «اختبر نفسك» → «✓ أنجزت اليوم». Under it «راجع صفحات إضافية».
+  - **مراجعة اليوم:** each page with surah, kind («آخر ما حفظت» / «القديم» / «إضافية») and ✅. Ticking is immediate, with «سُجّلت صفحة ١٤ · تراجع» for 5 seconds. Folds to «✅ راجعت ٦ صفحات اليوم» when done.
+  - **اختبر نفسك:** folded; opens by itself when the review is done. 📝 تدريب (no timer) · ⏱️ تحدٍّ (timer + score) · ليس اليوم (counts as done). «اختبار على صفحات أخرى» (today · last 2/3 days · this week · آخر ما حفظت · everything). Types are «🎲 عشوائي»; question count and excluded types under «خيارات». Folds to «✅ اختبرت نفسك اليوم — ٨/٩». Nothing reviewed today → it offers the last day you reviewed.
+  - **«فاتك يوم الأحد — سجّل مراجعته»** only when a day in the last 14 (after the setup) has nothing recorded. It opens a window with that day's list → حفظ / إلغاء, or «لم أراجع فيه».
+- **خطتي:** a two-line summary + «تعديل»; four folded sections (الحفظ الجديد, مراجعة آخر ما حفظت, مراجعة القديم, التذكيرات); «إعادة الإعداد من البداية» (keeps pages and history, after a confirmation).
+- **تقدّمي:** quick numbers (memorized, streak, this week), the map of the last 42 days (tap a day to record it, up to 30 days back), pages per juz with «✏️ تعديل المحفوظ», «🎯 اختبار كل المحفوظ», and the weekly chart + strength map under «تفاصيل أكثر».
+- Gone: «تابع الحفظ / تابع المراجعة», the permanent day list, the separate review tab, review mode's bar.
+
+## «القديم» is now a round in page order (الختمة)
+- Old pages are reviewed in the plan's direction, a fixed number a day; what isn't done stays first tomorrow. When every page is done, the next round starts from the first page and «أتممت الختمة ٢» shows.
+- A page memorized today is first reviewed tomorrow (it no longer adds to today's review).
+
+## Save / cancel everywhere it matters
+- Plan edit, «تعديل المحفوظ» (with a fixed bar «تغيير ٤ صفحات · حفظ · إلغاء»), a missed day: all on a temporary copy. «حفظ» is off when nothing changed or a field is invalid (the field turns red with a short reason). «إلغاء» changes nothing.
+- Leaving with unsaved changes (another tab, the bottom bar, the phone's back button) asks «حفظ / تجاهل / البقاء».
+- Removing more than 10 memorized pages at once asks again, with the number.
+- Folded sections are real buttons (`aria-expanded`, 44 px), work with the keyboard, and remember open/closed per section on the device (`qf_hifz_sec_<id>`), except today's review/test which follow the day. «؟» next to the new ideas explains each in one sentence. The tabs work with the arrow keys.
+
+## In the Mushaf
+- One button «سجّل هذه الصفحة» instead of 📗 and 🔁: grey = not memorized, 📗 = memorized, ✅ = reviewed today. Its menu: «حفظتها اليوم» (only for a page not memorized) · «راجعتها اليوم» (only for a memorized page) · «إلغاء تسجيل اليوم» (only if something was recorded today).
+- Opened from «كمّل» (or a row of today's list): a bar at the top «صفحة ١٤ — ٣ من ٦ · ✅ تمّت · التالية ◀» (for the page to memorize: «✅ حفظتها»); it hides on any other page; at the end «إنهاء ◀» goes back to اليوم.
+
+## 📝 اختبارات
+- New type «🎲 عشوائي — نوع مختلف في كل سؤال» (from the types that fit the range). Answers of a test started from 📗 حفظي count as that day's test.
+
+## Data (all inside `qf_hifz_v2`)
+- plan: `setupOn`, `dir`, `memNext`, `farCursor` + `farSince` (where the current round started), `farCycle`.
+- log[day]: `t` (the test: `{s, n}` or `"skip"`), `x` (extra pages), `miss` (marked «لم أراجع فيه»).
+- Two devices: the newer plan wins, reviews are merged; for the test the bigger result is kept.
+
+## Checked in the browser
+- A new user from setup to the first task; a user in the middle of a cycle sees the right next page, «آخر ما حفظت» and «القديم» from where they were; no missed days before the setup; «كمّل» in all four states; «إلغاء» in every form leaves `qf_hifz_v2` byte-for-byte the same; leaving with changes asks (bottom bar and back button); data from the previous version opens with the setup filled in; no horizontal overflow and no console errors at 320 / 390 / 820 / 1280 px, light and dark; sections and tabs with the keyboard.
+
 # ⏱️ Days in your own time zone, daily XP limit — 2026-11-02 (3)
 
 ## To do on your side (once)

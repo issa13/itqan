@@ -276,7 +276,7 @@ const ItqanNotify = (function () {
           title: "🔁 مراجعة المحفوظ",
           body,
           schedule: { at, allowWhileIdle: true },
-          extra: { open: "hifz", tab: "review" },
+          extra: { open: "hifz", tab: "today" },
         }));
       }
     }
@@ -359,7 +359,9 @@ const ItqanNotify = (function () {
           try { quranGoToPage(page); } catch (e) { /* ignore */ }
         }
       } else if (extra && extra.open === "hifz") {
-        if (extra.tab) { try { localStorage.setItem("qf_hifz_tab", extra.tab); } catch (e) { /* ignore */ } }
+        // the tab the notification is about (☀️ اليوم / 🗒️ خطتي); otherwise 📗 حفظي opens on ☀️ اليوم
+        const tab = extra.tab === "review" ? "today" : extra.tab;
+        if (tab) { try { localStorage.setItem("qf_hifz_open_tab", tab); } catch (e) { /* ignore */ } }
         switchView("hifz"); // 📗 حفظي
       } else if (extra && extra.open === "home") {
         switchView("home");

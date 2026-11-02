@@ -3,25 +3,33 @@
 //
 // Data (version 2, localStorage "qf_hifz_v2"):
 //   pages: { "<page>": { m: "YYYY-MM-DD" | null, r: "YYYY-MM-DD" | null } }
-//          m = the day it was memorized (null = «قديم», memorized before
-//          the app tracked it), r = the last day it was reviewed.
-//   log:   { "YYYY-MM-DD": { r: [pages reviewed that day], q: due that day } }
+//          m = the day it was memorized (null = «محفوظ قديم», memorized
+//          before the app tracked it), r = the last day it was reviewed.
+//   log:   { "YYYY-MM-DD": { r: [pages reviewed that day], q: due that day,
+//            f: [that day's «القديم» list], x: [extra pages],
+//            t: {s, n} | "skip" (the day's test), miss: true } }
 //          kept for the statistics (last LOG_DAYS days).
-//   plan:  the user's settings — weekly goal, near-review length, far cycle.
+//   plan:  the user's settings:
+//          weeklyGoal (0 = review only), weekStart, nearDays,
+//          farMode / farPages / farDays (how much «القديم» a day),
+//          setupOn — the day the plan was set up (days before it are never
+//                    «missed»; the first week's goal is pro-rated),
+//          dir     — "asc" (from الفاتحة) | "desc" (from الناس),
+//          memNext — the next page to memorize, as chosen by the user,
+//          farCursor / farSince — where the current «ختمة» of «القديم»
+//                    started: pages before farCursor (in `dir` order) and
+//                    pages reviewed since farSince count as done,
+//          farCycle — the number of the current «ختمة» (from 1).
 //
 // Plans:
-//   • خطة الحفظ — a weekly goal (pages per week); progress counts pages
-//     whose m falls in the current week.
-//   • مراجعة القريب — every page memorized in the last `nearDays` days,
-//     every day.
-//   • مراجعة البعيد — all other memorized pages stand in a queue, the one
-//     reviewed longest ago first (never reviewed = first). Each day the
-//     first `quota` pages of the queue are due. Pages not reviewed stay at
-//     the front, so tomorrow shows them plus new ones — always `quota`
-//     pages, nothing piles up. Reviewing more («➕ راجعت أكتر») takes the
-//     next pages of the queue; reviewing a page sends it to the back.
-//     `quota` = farPages (mode "pages") or ceil(far pages / farDays)
-//     (mode "days").
+//   • الحفظ الجديد — a weekly goal (pages per week), spread over the days
+//     left in the week; the next page follows `dir` from memNext.
+//   • مراجعة آخر ما حفظت — every page memorized in the last `nearDays`
+//     days (not the day itself), every day.
+//   • مراجعة القديم — all other memorized pages, in `dir` order, a fixed
+//     number a day (farPages, or ceil(pages / farDays)). What isn't
+//     reviewed stays first for the next day; when every page of the
+//     «ختمة» is done, the next one starts from the first page.
 //
 // The old format (version 1: { pages: [...], updatedAt }) is converted on
 // load — those pages become «قديم» (no date, never reviewed).
@@ -48,6 +56,12 @@ const HifzStore = (function () {
     farMode: "pages",  // "pages" (pages per day) | "days" (cycle length)
     farPages: 5,
     farDays: 14,
+    setupOn: null,     // "YYYY-MM-DD" — the day the plan was set up
+    dir: null,         // "asc" | "desc" (null: worked out from the dates)
+    memNext: null,     // page chosen as the next to memorize
+    farCursor: null,   // where the current «ختمة» of «القديم» started
+    farSince: null,    // … and on which day
+    farCycle: 1,       // the number of the current «ختمة»
   };
 
   let pages = {};      // page -> { m, r }
@@ -99,9 +113,34 @@ const HifzStore = (function () {
       const r = Array.isArray(v.r) ? Array.from(new Set(v.r.map(Number).filter(validPage))) : [];
       const q = clampInt(v.q, 0, 604, null);
       const f = Array.isArray(v.f) ? v.f.map(Number).filter(validPage) : null;
-      if (r.length || q != null) out[day] = f ? { r, q, f } : { r, q };
+      const x = Array.isArray(v.x) ? v.x.map(Number).filter(validPage) : null;
+      const t = cleanTest(v.t);
+      const miss = v.miss === true;
+      if (!r.length && q == null && !t && !miss && !f) return;
+      const e = { r, q };
+      if (f) e.f = f;
+      if (x && x.length) e.x = x;
+      if (t) e.t = t;
+      if (miss) e.miss = true;
+      out[day] = e;
     });
     return out;
+  }
+  // a day's test: "skip" («ليس اليوم») or { s: correct, n: answered }
+  function cleanTest(t) {
+    if (t === "skip") return "skip";
+    if (t && typeof t === "object") {
+      const n = clampInt(t.n, 0, 100000, 0), s = clampInt(t.s, 0, 100000, 0);
+      if (n > 0) return { s: Math.min(s, n), n };
+    }
+    return null;
+  }
+  function betterTest(a, b) {
+    if (!a) return b || null;
+    if (!b) return a;
+    if (a === "skip") return b;
+    if (b === "skip") return a;
+    return b.n > a.n ? b : a;
   }
   function cleanPlan(raw) {
     const p = Object.assign({}, DEFAULT_PLAN);
@@ -112,6 +151,12 @@ const HifzStore = (function () {
     p.farMode = raw.farMode === "days" ? "days" : "pages";
     p.farPages = clampInt(raw.farPages, 1, 100, DEFAULT_PLAN.farPages);
     p.farDays = clampInt(raw.farDays, 1, 365, DEFAULT_PLAN.farDays);
+    p.setupOn = validDay(raw.setupOn) ? raw.setupOn : null;
+    p.dir = raw.dir === "asc" || raw.dir === "desc" ? raw.dir : null;
+    p.memNext = clampInt(raw.memNext, 1, 604, null);
+    p.farCursor = clampInt(raw.farCursor, 1, 604, null);
+    p.farSince = validDay(raw.farSince) ? raw.farSince : null;
+    p.farCycle = clampInt(raw.farCycle, 1, 10000, 1);
     return p;
   }
 
@@ -137,7 +182,9 @@ const HifzStore = (function () {
   function doc() { return { v: 2, pages, log, plan }; }
   function sortedPages() { return Object.keys(pages).map(Number).sort((a, b) => a - b); }
 
+  let previewing = false; // preview(): nothing is written
   function persist() {
+    if (previewing) return;
     try {
       localStorage.setItem(KEY, JSON.stringify(Object.assign(doc(), { updatedAt })));
       // the old key stays current too, in case an older version of the app runs again
@@ -284,39 +331,48 @@ const HifzStore = (function () {
     return days.length ? days[days.length - 1] : null;
   }
 
-  // Days since the last recorded review that have nothing recorded (oldest
-  // first, up to yesterday) — for «سجّل الأيام الفائتة». Empty when the
-  // last review was today or yesterday, or nothing was ever reviewed.
-  function missedDays() {
-    const last = lastReviewDay();
-    if (!last || !count()) return [];
-    const t = today();
-    const out = [];
-    for (let d = addDays(last, 1); d < t && out.length < MAX_BACK_DAYS; d = addDays(d, 1)) {
-      if (daysBetween(d, t) <= MAX_BACK_DAYS) out.push(d);
-    }
-    return out;
-  }
-
   // ---------- plans ----------
   function getPlan() { return Object.assign({}, plan); }
   function setPlan(patch) { plan = cleanPlan(Object.assign({}, plan, patch || {})); changed(); }
+  function isSetUp() { return !!plan.setupOn; }
 
   // memorized by that day (pages without a date count as always memorized)
   function memorizedBy(page, day) { const m = pages[page].m; return !m || m <= day; }
 
+  // «آخر ما حفظت»: memorized on one of the `nearDays` days before `day`
+  // (a page memorized today is first reviewed tomorrow).
   function isNear(page, day) {
     const m = pages[page].m;
-    return !!m && plan.nearDays > 0 && m <= day && daysBetween(m, day) < plan.nearDays;
+    if (!m || plan.nearDays <= 0 || m >= day) return false;
+    return daysBetween(m, day) <= plan.nearDays;
   }
 
-  // far queue for a day: reviewed longest ago (before that day) first,
-  // never reviewed first of all, then by page number.
-  function farQueue(day) {
-    const last = {};
+  // ---- «القديم»: the «ختمة» in page order ----
+  function dirSign() { return plan.dir === "desc" ? -1 : 1; }
+  // «القديم» on that day, in the order of the «ختمة»
+  function farOrder(day) {
     const list = sortedPages().filter((p) => memorizedBy(p, day) && !isNear(p, day));
-    list.forEach((p) => { last[p] = lastReviewBefore(p, day) || ""; });
-    return list.sort((a, b) => (last[a] < last[b] ? -1 : last[a] > last[b] ? 1 : a - b));
+    return dirSign() === 1 ? list : list.reverse();
+  }
+  // is page a before page b in the order of the «ختمة»?
+  function before(a, b) { return dirSign() === 1 ? a < b : a > b; }
+
+  // Pages of the current «ختمة» not done yet, as of the start of `day`
+  // (reviews of `day` itself don't count, so its list stays put while you
+  // tick pages). → { order, pending }
+  function farPending(day) {
+    const order = farOrder(day);
+    const cursor = plan.farCursor;
+    const since = plan.farSince;
+    const pending = order.filter((p) => {
+      if (cursor && before(p, cursor)) return false;          // before where the «ختمة» started
+      if (since) {
+        const days = getReviewIndex().get(p) || [];
+        if (days.some((d) => d >= since && d < day)) return false; // already reviewed in it
+      }
+      return true;
+    });
+    return { order, pending };
   }
 
   function farQuota(farCount) {
@@ -325,44 +381,69 @@ const HifzStore = (function () {
     return Math.min(plan.farPages, farCount);
   }
 
+  // When every page of the «ختمة» is done, the next one starts today from
+  // the first page. → true if it rolled over.
+  function rollFarCycle(day) {
+    if (!plan.setupOn) return false;
+    const { order, pending } = farPending(day);
+    if (!order.length || pending.length) return false;
+    // nothing was ever done in it (e.g. pages before the cursor only after
+    // an edit) → it still counts as finished
+    plan.farCycle = (plan.farCycle || 1) + 1;
+    plan.farCursor = order[0];
+    plan.farSince = day;
+    updatedAt = Date.now();
+    persist();
+    schedulePush();
+    return true;
+  }
+
   // A day's review (default today): { day, near: [{page, done}], far: [{page, done}],
   //   extra: [{page}], more: [pages], quota, farCount, cycleDays, doneCount, dueCount,
-  //   reviewed: [pages reviewed that day] }
-  // far = that day's due pages. They're chosen once and kept in the log
-  // (log[day].f), so ticking pages — or «➕ راجعت أكثر» — doesn't reshuffle
-  // the list; they're re-chosen only when the quota changes (plan edited,
-  // pages added/removed). extra = pages reviewed that day beyond the list;
-  // more = the next pages of the queue, for «➕ راجعت أكثر».
+  //   reviewed: [pages reviewed that day], cycle, cycleLeft, cycleDone }
+  // far = that day's «القديم» — the next `quota` pages of the «ختمة» that
+  // weren't done before that day. Kept in the log (log[day].f) for the
+  // statistics; a past day keeps the list it had. extra = pages reviewed
+  // that day beyond the lists; more = the next pages of the «ختمة», for
+  // «راجع صفحات إضافية».
   function planFor(dayArg) {
     const t = validDay(dayArg) ? dayArg : today();
+    const isToday = t === today();
+    if (isToday) rollFarCycle(t);
     const done = (p) => isReviewedOn(p, t);
     const near = sortedPages().filter((p) => isNear(p, t)).map((page) => ({ page, done: done(page) }));
-    const queue = farQueue(t);
-    const inQueue = new Set(queue);
-    const quota = farQuota(queue.length);
+    const { order, pending } = farPending(t);
+    const inOrder = new Set(order);
+    const quota = farQuota(order.length);
     const entry = log[t] || { r: [], q: null };
-    let list = Array.isArray(entry.f) ? entry.f.filter((p) => inQueue.has(p)) : null;
-    if (!list || list.length !== quota) {
-      // keep what's already ticked from the old list, fill up from the queue
-      const kept = (list || []).filter(done).slice(0, quota);
-      const fill = queue.filter((p) => !kept.includes(p) && !done(p));
-      list = kept.concat(fill.slice(0, quota - kept.length));
-      if (list.length < quota) list = list.concat(queue.filter((p) => !list.includes(p)).slice(0, quota - list.length));
-    }
+    let list;
+    if (!isToday && Array.isArray(entry.f)) list = entry.f.filter((p) => inOrder.has(p));
+    else list = pending.slice(0, quota);
     const listSet = new Set(list);
+    const nearSet = new Set(near.map((x) => x.page));
     const far = list.map((page) => ({ page, done: done(page) }));
-    const extra = queue.filter((p) => !listSet.has(p) && done(p)).map((page) => ({ page, done: true }));
-    const more = queue.filter((p) => !listSet.has(p) && !done(p));
-    const cycleDays = quota ? Math.ceil(queue.length / quota) : 0;
-    const dueCount = near.length + quota;
+    const reviewed = reviewedOn(t);
+    const extra = reviewed.filter((p) => !listSet.has(p) && !nearSet.has(p)).map((page) => ({ page, done: true }));
+    const more = pending.filter((p) => !listSet.has(p) && !done(p));
+    const cycleDays = quota ? Math.ceil(order.length / quota) : 0;
+    const dueCount = near.length + far.length;
     const doneCount = near.filter((x) => x.done).length + far.filter((x) => x.done).length;
+    // the «ختمة» is finished once every pending page was reviewed (today included)
+    const cycleLeft = pending.filter((p) => !done(p)).length;
     // remember the day's list and how much was due (for the statistics' day colours)
+    const x = extra.map((e) => e.page);
     const sameList = Array.isArray(entry.f) && entry.f.length === list.length && entry.f.every((p, k) => p === list[k]);
-    if ((dueCount || null) !== entry.q || !sameList) {
-      log[t] = { r: entry.r, q: dueCount || null, f: list };
+    const sameX = JSON.stringify(entry.x || []) === JSON.stringify(x);
+    if ((isToday || !Array.isArray(entry.f)) && ((dueCount || null) !== entry.q || !sameList || !sameX)) {
+      const e = Object.assign({}, entry, { r: entry.r, q: dueCount || null, f: list });
+      if (x.length) e.x = x; else delete e.x;
+      log[t] = e;
       persist(); // no push/emit just for this; it travels with the next change
     }
-    return { day: t, near, far, extra, more, quota, farCount: queue.length, cycleDays, dueCount, doneCount, reviewed: reviewedOn(t) };
+    return {
+      day: t, near, far, extra, more, quota, farCount: order.length, cycleDays, dueCount, doneCount, reviewed,
+      cycle: plan.farCycle || 1, cycleLeft, cycleDone: order.length > 0 && cycleLeft === 0,
+    };
   }
   function todayPlan() { return planFor(today()); }
 
@@ -384,6 +465,7 @@ const HifzStore = (function () {
     const lastOfDay = Math.max(...sameDay);
     const firstOfDay = Math.min(...sameDay);
     if (ref !== null && ref > lastOfDay) direction = -1;
+    if (plan.dir) direction = dirSign();
     const from = direction === 1 ? lastOfDay : firstOfDay;
     for (let p = from + direction; p >= 1 && p <= 604; p += direction) {
       if (!pages[p]) return { page: p, after: from, direction };
@@ -391,20 +473,270 @@ const HifzStore = (function () {
     // nothing left that way (e.g. you reached the end of the Mushaf):
     // the first free page the other way
     for (let p = from - direction; p >= 1 && p <= 604; p -= direction) {
-      if (!pages[p]) return { page: p, after: p + direction, direction: -direction };
+      if (!pages[p]) return { page: p, after: p + direction, direction: -direction, wrapped: true };
     }
     return null;
   }
 
-  // This week's memorization goal: { goal, done, start, end, daysLeft }
+  // The first page not in `set` going `dir` (1 / -1) from the start of the
+  // Mushaf (asc: the lowest free page; desc: the highest).
+  function suggestNext(set, dir) {
+    if (dir === -1) { for (let p = 604; p >= 1; p--) if (!set.has(p)) return p; return null; }
+    for (let p = 1; p <= 604; p++) if (!set.has(p)) return p;
+    return null;
+  }
+  // The free page nearest to `page` (for «أقرب صفحة غير محفوظة»), looking
+  // `dir` first.
+  function nearestFree(page, set, dir) {
+    const d = dir === -1 ? -1 : 1;
+    for (let k = 0; k < 604; k++) {
+      const a = page + d * k, b = page - d * k;
+      if (a >= 1 && a <= 604 && !set.has(a)) return a;
+      if (b >= 1 && b <= 604 && !set.has(b)) return b;
+    }
+    return null;
+  }
+  // The memorized page nearest to `page` (for «أين وصلت مراجعة القديم»).
+  function nearestIn(page, list) {
+    let best = null;
+    list.forEach((p) => { if (best === null || Math.abs(p - page) < Math.abs(best - page)) best = p; });
+    return best;
+  }
+
+  // The next page to memorize under the plan:
+  // → { page, direction, wrapped } or null (the whole Mushaf is memorized)
+  function nextMemPage() {
+    if (count() >= 604) return null;
+    const d = dirSign();
+    const start = plan.memNext;
+    if (validPage(start)) {
+      if (!pages[start]) return { page: start, direction: d, wrapped: false };
+      for (let p = start + d; p >= 1 && p <= 604; p += d) if (!pages[p]) return { page: p, direction: d, wrapped: false };
+      for (let p = start - d; p >= 1 && p <= 604; p -= d) if (!pages[p]) return { page: p, direction: -d, wrapped: true };
+      return null;
+    }
+    const n = nextToMemorize();
+    if (n) return { page: n.page, direction: n.direction, wrapped: !!n.wrapped };
+    const p = suggestNext(all(), plan.dir ? d : 1);
+    return p ? { page: p, direction: d, wrapped: false } : null;
+  }
+
+  // This week's memorization goal: { goal, fullGoal, done, start, end, daysLeft, partial }
+  // The week the plan was set up in only asks for its share of the goal
+  // (3 days of 7 → 3/7 of it, rounded up).
   function weekInfo(ref) {
     const t = ref || today();
     const d = parseDay(t);
     const start = addDays(t, -((d.getDay() - plan.weekStart + 7) % 7));
     const end = addDays(start, 6);
-    const done = sortedPages().filter((p) => pages[p].m && pages[p].m >= start && pages[p].m <= end).length;
-    return { goal: plan.weeklyGoal, done, start, end, daysLeft: daysBetween(t, end) + 1 };
+    // pages dated before the plan was set up (e.g. the setup's approximate
+    // dates) don't count towards its first week
+    const from = plan.setupOn && plan.setupOn > start ? plan.setupOn : start;
+    const done = sortedPages().filter((p) => pages[p].m && pages[p].m >= from && pages[p].m <= end).length;
+    let goal = plan.weeklyGoal;
+    let partial = false;
+    if (goal && plan.setupOn && plan.setupOn > start && plan.setupOn <= end) {
+      const days = daysBetween(plan.setupOn, end) + 1;
+      goal = Math.ceil((plan.weeklyGoal * days) / 7);
+      partial = true;
+    }
+    return { goal, fullGoal: plan.weeklyGoal, done, start, end, daysLeft: daysBetween(t, end) + 1, partial };
   }
+
+  // Today's memorization: { active, reason, page, pages, target, doneToday, done, wrapped }
+  //   reason (when not active): "reviewOnly" | "goalMet" | "complete"
+  function memTask() {
+    const t = today();
+    const doneToday = sortedPages().filter((p) => pages[p].m === t);
+    if (!plan.weeklyGoal) return { active: false, reason: "reviewOnly", doneToday: doneToday.length };
+    const next = nextMemPage();
+    if (!next) return { active: false, reason: "complete", doneToday: doneToday.length };
+    const w = weekInfo(t);
+    const doneBefore = w.done - doneToday.length;
+    if (doneBefore >= w.goal) return { active: false, reason: "goalMet", doneToday: doneToday.length, week: w };
+    const target = Math.max(1, Math.ceil((w.goal - doneBefore) / w.daysLeft));
+    // the pages for today, from the next one on (for «احفظ: صفحة ٤٥–٤٦»)
+    const list = [next.page];
+    for (let p = next.page + next.direction; list.length < target - Math.min(doneToday.length, target) && p >= 1 && p <= 604; p += next.direction) {
+      if (!pages[p]) list.push(p);
+    }
+    return {
+      active: true, page: next.page, pages: list, target, doneToday: doneToday.length,
+      done: doneToday.length >= target, wrapped: next.wrapped, week: w,
+    };
+  }
+
+  // What's left today, in the order «كمّل» goes through it:
+  //   { mem, review (= todayPlan()), test, step: { kind, page } }
+  //   kind: "mem" | "review" | "test" | "done"
+  function todayTasks() {
+    const t = today();
+    const mem = memTask();
+    const review = planFor(t);
+    const reviewedToday = review.reviewed.length > 0;
+    const test = log[t] && log[t].t ? log[t].t : null;
+    let step;
+    if (mem.active && !mem.done) step = { kind: "mem", page: mem.page };
+    else {
+      const next = review.near.concat(review.far).find((x) => !x.done);
+      if (next) step = { kind: "review", page: next.page };
+      else if (reviewedToday && !test) step = { kind: "test" };
+      else step = { kind: "done" };
+    }
+    return { mem, review, test, step, testNeeded: reviewedToday };
+  }
+
+  // ---------- the day's test, «لم أراجع فيه» ----------
+  function testOn(day) { return log[day] && log[day].t ? log[day].t : null; }
+  function setTest(day, value) {
+    const d = day || today();
+    const t = cleanTest(value);
+    const entry = log[d] || (log[d] = { r: [], q: null });
+    if (t) entry.t = t; else delete entry.t;
+    changed();
+  }
+  // one answer of a test started from 📗 حفظي (📝 تدريب or ⏱️ تحدٍّ)
+  function addTestAnswer(correct) {
+    const d = today();
+    const entry = log[d] || (log[d] = { r: [], q: null });
+    const t = entry.t && entry.t !== "skip" ? entry.t : { s: 0, n: 0 };
+    entry.t = { s: t.s + (correct ? 1 : 0), n: t.n + 1 };
+    changed();
+  }
+  function setMiss(day, on) {
+    if (!validDay(day)) return;
+    const entry = log[day] || (log[day] = { r: [], q: null });
+    if (on) entry.miss = true; else delete entry.miss;
+    changed();
+  }
+  function isMissAccepted(day) { return !!(log[day] && log[day].miss); }
+
+  // Days in the last 14 (after the day the plan was set up, before today)
+  // with nothing recorded although something was due → oldest first.
+  const MISSED_WINDOW = 14;
+  function missedDays() {
+    if (!plan.setupOn || !count()) return [];
+    const t = today();
+    const out = [];
+    for (let i = MISSED_WINDOW; i >= 1; i--) {
+      const d = addDays(t, -i);
+      if (d <= plan.setupOn) continue;
+      if (log[d] && (log[d].r.length || log[d].miss)) continue;
+      // anything to review that day? (pages memorized before it)
+      if (!sortedPages().some((p) => !pages[p].m || pages[p].m < d)) continue;
+      out.push(d);
+    }
+    return out;
+  }
+
+  // Pages reviewed between two days (both included), for «اختبار على صفحات أخرى».
+  function reviewedBetween(from, to) {
+    const set = new Set();
+    Object.keys(log).forEach((d) => { if (d >= from && d <= to) log[d].r.forEach((p) => { if (pages[p]) set.add(p); }); });
+    return Array.from(set).sort((a, b) => a - b);
+  }
+  function nearPages(day) { const t = day || today(); return sortedPages().filter((p) => isNear(p, t)); }
+
+  // ---------- writing a whole form at once ----------
+  // The first-time setup («حفظ الخطة»): adds the memorized pages (as «قديم»,
+  // or with the given approximate dates — a page that already has a real
+  // date keeps it), then the plan. Pages already memorized are never removed.
+  //   { old: [pages], dated: { page: day }, plan: {...} }
+  function saveSetup(data) {
+    const t = today();
+    (data.old || []).forEach((p) => { if (validPage(p) && !pages[p]) pages[p] = { m: null, r: null }; });
+    Object.keys(data.dated || {}).forEach((k) => {
+      const p = Number(k), d = data.dated[k];
+      if (!validPage(p) || !validDay(d)) return;
+      if (!pages[p]) pages[p] = { m: null, r: null };
+      if (!pages[p].m) pages[p].m = d > t ? t : d;
+    });
+    const np = Object.assign({}, plan, data.plan || {}, { setupOn: t });
+    np.farSince = t;
+    plan = cleanPlan(np);
+    reviewIndex = null;
+    changed();
+  }
+  // For data from before the setup: where the old queue had got to — the
+  // first page (in page order) among those reviewed longest ago.
+  function legacyFarStart() {
+    const order = farOrder(today());
+    if (!order.length) return null;
+    const key = (p) => pages[p].r || "";
+    let min = null;
+    order.forEach((p) => { if (min === null || key(p) < min) min = key(p); });
+    return order.find((p) => key(p) === min) || null;
+  }
+  // «احتفظ بإعداداتي» — the plan as it is, set up from today on.
+  function keepSettings(farCursor) {
+    plan = cleanPlan(Object.assign({}, plan, { setupOn: today(), farCursor: farCursor || plan.farCursor, farSince: today() }));
+    changed();
+  }
+  // «خطتي ← تعديل → حفظ»: the whole plan. A new starting point for
+  // «القديم» (or a new direction) starts the «ختمة» from there today.
+  function savePlan(next) {
+    const np = cleanPlan(Object.assign({}, plan, next));
+    if (np.farCursor !== plan.farCursor || np.dir !== plan.dir) np.farSince = today();
+    if (!np.setupOn) np.setupOn = today();
+    plan = np;
+    changed();
+  }
+  // «تعديل المحفوظ → حفظ»: adds { page: day | null } and removes [pages] in one go.
+  function applyPageEdits(adds, removes) {
+    let any = false;
+    Object.keys(adds || {}).forEach((k) => {
+      const p = Number(k);
+      if (!validPage(p) || pages[p]) return;
+      mark(p, adds[k] === null ? null : adds[k]);
+      any = true;
+    });
+    (removes || []).forEach((p) => { if (pages[p]) { delete pages[p]; any = true; } });
+    if (any) changed();
+  }
+
+  // Ticks / unticks several pages for one day at once («سجّل يومًا فاتك → حفظ»).
+  // → { ok: true } or { ok: false, reason }
+  function setReviewedMany(day, on, off) {
+    const problem = reviewDayProblem(day);
+    if (problem) return { ok: false, reason: problem };
+    const entry = log[day] || (log[day] = { r: [], q: null });
+    (on || []).forEach((p) => { if (pages[p] && !(pages[p].m && pages[p].m > day) && !entry.r.includes(p)) entry.r.push(p); });
+    entry.r = entry.r.filter((p) => !(off || []).includes(p));
+    if (entry.r.length) delete entry.miss;
+    reviewIndex = null;
+    (on || []).concat(off || []).forEach((p) => { if (pages[p]) recomputeR(p); });
+    changed();
+    return { ok: true };
+  }
+
+  // What a setup would give today, without saving anything:
+  // → { mem: memTask(), review: planFor(today) }
+  function preview(data) {
+    const saved = { pages, log, plan, updatedAt, reviewIndex };
+    previewing = true;
+    try {
+      pages = JSON.parse(JSON.stringify(pages));
+      log = JSON.parse(JSON.stringify(log));
+      const t = today();
+      (data.old || []).forEach((p) => { if (validPage(p) && !pages[p]) pages[p] = { m: null, r: null }; });
+      Object.keys(data.dated || {}).forEach((k) => {
+        const p = Number(k);
+        if (!validPage(p)) return;
+        if (!pages[p]) pages[p] = { m: null, r: null };
+        if (!pages[p].m) pages[p].m = data.dated[k];
+      });
+      plan = cleanPlan(Object.assign({}, plan, data.plan || {}, { setupOn: t, farSince: t }));
+      reviewIndex = null;
+      return { mem: memTask(), review: planFor(t) };
+    } finally {
+      pages = saved.pages; log = saved.log; plan = saved.plan; updatedAt = saved.updatedAt; reviewIndex = null;
+      previewing = false;
+    }
+  }
+
+  // Raw copy of what's saved (for the browser tests: «إلغاء» must not
+  // change a single byte).
+  function rawSaved() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
 
   // ---------- statistics ----------
   function stats() {
@@ -431,7 +763,7 @@ const HifzStore = (function () {
         const dueSet = new Set((e.f || []).concat(nearCache[day] || (nearCache[day] = sortedPages().filter((p) => isNear(p, day)))));
         dueDone = r.filter((p) => dueSet.has(p)).length;
       }
-      if (day < firstDay) state = "free";
+      if (day < firstDay || (plan.setupOn && day < plan.setupOn && !r.length)) state = "free";
       else if (!r.length) state = q || day < t ? "none" : "free";
       else if (!q) state = "full";
       else if (dueDone >= q) state = r.length > dueDone ? "extra" : "full";
@@ -484,7 +816,12 @@ const HifzStore = (function () {
     const mergedLog = Object.assign({}, remote.log);
     Object.keys(log).forEach((day) => {
       const a = mergedLog[day], b = log[day];
-      mergedLog[day] = a ? Object.assign({}, a, b, { r: Array.from(new Set(a.r.concat(b.r))), q: Math.max(a.q || 0, b.q || 0) || null }) : b;
+      if (!a) { mergedLog[day] = b; return; }
+      const m = Object.assign({}, a, b, { r: Array.from(new Set(a.r.concat(b.r))), q: Math.max(a.q || 0, b.q || 0) || null });
+      const t = betterTest(a.t, b.t);
+      if (t) m.t = t; else delete m.t;
+      if (a.miss || b.miss) m.miss = true;
+      mergedLog[day] = m;
     });
     const keepLatestReview = (into, other) => {
       Object.keys(into).forEach((p) => {
@@ -516,7 +853,11 @@ const HifzStore = (function () {
     has, all, count, info, toggle, setMany, setDate, memorizedWithin,
     // reviews & plans
     reviewedToday, isReviewedOn, reviewedOn, reviewDayProblem, setReviewed, lastReviewDay, missedDays,
-    getPlan, setPlan, todayPlan, planFor, nextToMemorize, weekInfo, stats,
+    reviewedBetween, nearPages,
+    getPlan, setPlan, isSetUp, todayPlan, planFor, nextToMemorize, nextMemPage, suggestNext, nearestFree, nearestIn,
+    weekInfo, memTask, todayTasks, farOrder: (d) => farOrder(d || today()), stats,
+    testOn, setTest, addTestAnswer, setMiss, isMissAccepted,
+    saveSetup, keepSettings, legacyFarStart, savePlan, applyPageEdits, setReviewedMany, preview, rawSaved,
     // helpers
     today, addDays, daysBetween,
     mergeRemote, onChange,

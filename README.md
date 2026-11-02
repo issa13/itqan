@@ -29,7 +29,7 @@ Everything else — the Quran text itself, page layout, search, question generat
 | `net-status.js` | Knows whether the internet really works (phones say "online" even when no data gets through): time limits on every request, offline/online switching, a saved copy of the last loaded data for offline use. `supabase-client.js` sends everything through it and queues answers given offline. |
 | `notify.js` | Challenge notifications + ⏰ reminders (daily wird, review on days you didn't practise, سورة الكهف on Friday — phone app only, scheduled on the device). Challenge notifications: asks permission on first open, then shows a system notification for each new duel invite (Capacitor Local Notifications in the app, the browser's Notification API on the website). |
 | `audio-store.js` | Recitation saved on the device for offline listening (📥): the app's own storage in the phone app, the browser's Cache Storage on the website. Also decides whether an ayah plays from the device or the internet. |
-| `hifz.js` | 📗 متابعة الحفظ — which pages you've memorized (device + account), used by the «📗 محفوظاتي» quiz range. |
+| `hifz.js` | 📗 حفظي data — memorized pages with dates, review log, the plan (setup day, direction, next page, «القديم» cycle) and `todayTasks()` (device + account). |
 | `derive-mutashabihat.js` | One-time script: finds look-alike ayahs → `quran-index/mutashabihat.json` (for «🔀 المتشابهات»). |
 | `scripts/build-tafsir.js` | One-time script: downloads التفسير الميسر + الميسر في غريب القرآن → `quran-index/tafsir/NNN.json` (tap-a-word sheet, works offline). |
 | `quran-reader.js` | The whole "📖 القرآن" reading tab — page rendering, search, bookmarks, reciter choice, listen-to-a-range (with gapless-ish preloading), and swipe-to-turn-page on mobile. |
