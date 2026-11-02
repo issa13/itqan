@@ -85,7 +85,6 @@ const HifzStore = (function () {
         if (!validPage(p)) return;
         const v = raw[k] || {};
         out[p] = { m: validDay(v.m) ? v.m : null, r: validDay(v.r) ? v.r : null };
-        if (validDay(v.prevR)) out[p].prevR = v.prevR;
       });
     }
     return out;
@@ -168,7 +167,8 @@ const HifzStore = (function () {
   // date: "YYYY-MM-DD" for a page memorized that day, null = «قديم».
   function mark(page, date) {
     if (!validPage(page)) return;
-    const m = date === undefined ? today() : (validDay(date) ? date : null);
+    let m = date === undefined ? today() : (validDay(date) ? date : null);
+    if (m && m > today()) m = today(); // never in the future
     const prev = pages[page];
     pages[page] = { m, r: prev ? prev.r : null };
   }
@@ -194,7 +194,7 @@ const HifzStore = (function () {
 
   function setDate(page, date) {
     if (!pages[page]) return;
-    pages[page].m = validDay(date) ? date : null;
+    pages[page].m = validDay(date) ? (date > today() ? today() : date) : null;
     changed();
   }
 
@@ -205,44 +205,103 @@ const HifzStore = (function () {
   }
 
   // ---------- reviews ----------
-  function reviewedToday(page) { return !!pages[page] && pages[page].r === today(); }
+  // Every review is kept in the log under its day (log[day].r), so a
+  // review can be recorded for an earlier day too (the app wasn't opened
+  // for a while) and undone again. pages[p].r caches the latest one.
+  const MAX_BACK_DAYS = 30; // how far back a review can be recorded
 
-  // Marks a page reviewed today (on = true) or undoes today's mark.
-  function setReviewed(page, on) {
-    if (!pages[page]) return;
+  function reviewDays(page) {
+    return Object.keys(log).filter((d) => log[d].r.includes(page)).sort();
+  }
+  // The last review strictly before `day` (used to order the queue for
+  // that day, so ticking pages on it never reshuffles its list).
+  function lastReviewBefore(page, day) {
+    let best = null;
+    Object.keys(log).forEach((d) => { if (d < day && log[d].r.includes(page) && (!best || d > best)) best = d; });
+    const cached = pages[page] && pages[page].r;
+    if (cached && cached < day && !log[cached] && (!best || cached > best)) best = cached; // from before the log
+    return best;
+  }
+  function recomputeR(page) {
+    const days = reviewDays(page);
+    const cached = pages[page].r;
+    pages[page].r = days.length ? days[days.length - 1] : (cached && !log[cached] ? cached : null);
+    if (cached && !log[cached] && days.length && cached > pages[page].r) pages[page].r = cached;
+  }
+
+  function isReviewedOn(page, day) { return !!pages[page] && !!log[day] && log[day].r.includes(page); }
+  function reviewedToday(page) { return isReviewedOn(page, today()); }
+  function reviewedOn(day) { return log[day] ? log[day].r.filter((p) => pages[p]).sort((a, b) => a - b) : []; }
+
+  // Can a review be recorded for this day? → "" or the reason (Arabic).
+  function reviewDayProblem(day) {
     const t = today();
-    const entry = log[t] || (log[t] = { r: [], q: null });
+    if (!validDay(day)) return "تاريخ غير صالح.";
+    if (day > t) return "لا يمكن تسجيل مراجعة في يوم لم يأتِ بعد.";
+    if (daysBetween(day, t) > MAX_BACK_DAYS) return `يمكن تسجيل المراجعة لآخر ${MAX_BACK_DAYS} يومًا فقط.`;
+    return "";
+  }
+
+  // Marks a page reviewed on `day` (default today), or undoes that mark.
+  // → { ok: true } or { ok: false, reason }
+  function setReviewed(page, on, day) {
+    const d = day || today();
+    if (!pages[page]) return { ok: false, reason: "هذه الصفحة ليست ضمن محفوظاتك." };
+    const problem = reviewDayProblem(d);
+    if (problem) return { ok: false, reason: problem };
+    if (on && pages[page].m && pages[page].m > d) return { ok: false, reason: "لا يمكن مراجعة صفحة قبل تاريخ حفظها." };
+    const entry = log[d] || (log[d] = { r: [], q: null });
     if (on) {
-      if (pages[page].r === t) return;
-      pages[page].prevR = pages[page].r; // so «undo» today puts it back in its place
-      pages[page].r = t;
-      if (!entry.r.includes(page)) entry.r.push(page);
+      if (entry.r.includes(page)) return { ok: true };
+      entry.r.push(page);
     } else {
-      if (pages[page].r !== t) return;
-      pages[page].r = pages[page].prevR || null;
+      if (!entry.r.includes(page)) return { ok: true };
       entry.r = entry.r.filter((p) => p !== page);
     }
+    recomputeR(page);
     changed();
+    return { ok: true };
+  }
+
+  // The most recent day with any review, or null.
+  function lastReviewDay() {
+    const days = Object.keys(log).filter((d) => log[d].r.length).sort();
+    return days.length ? days[days.length - 1] : null;
+  }
+
+  // Days since the last recorded review that have nothing recorded (oldest
+  // first, up to yesterday) — for «سجّل الأيام الفائتة». Empty when the
+  // last review was today or yesterday, or nothing was ever reviewed.
+  function missedDays() {
+    const last = lastReviewDay();
+    if (!last || !count()) return [];
+    const t = today();
+    const out = [];
+    for (let d = addDays(last, 1); d < t && out.length < MAX_BACK_DAYS; d = addDays(d, 1)) {
+      if (daysBetween(d, t) <= MAX_BACK_DAYS) out.push(d);
+    }
+    return out;
   }
 
   // ---------- plans ----------
   function getPlan() { return Object.assign({}, plan); }
   function setPlan(patch) { plan = cleanPlan(Object.assign({}, plan, patch || {})); changed(); }
 
-  function isNear(page, t) {
+  // memorized by that day (pages without a date count as always memorized)
+  function memorizedBy(page, day) { const m = pages[page].m; return !m || m <= day; }
+
+  function isNear(page, day) {
     const m = pages[page].m;
-    return !!m && plan.nearDays > 0 && daysBetween(m, t) < plan.nearDays && daysBetween(m, t) >= 0;
+    return !!m && plan.nearDays > 0 && m <= day && daysBetween(m, day) < plan.nearDays;
   }
 
-  // far queue: reviewed longest ago first (never = first), then by page.
-  // A page reviewed today is judged by its review before today, so today's
-  // list doesn't reshuffle while you tick pages.
-  function farQueue(t) {
-    return sortedPages().filter((p) => !isNear(p, t)).sort((a, b) => {
-      const ra = pages[a].r === t ? (pages[a].prevR || "") : (pages[a].r || "");
-      const rb = pages[b].r === t ? (pages[b].prevR || "") : (pages[b].r || "");
-      return ra < rb ? -1 : ra > rb ? 1 : a - b;
-    });
+  // far queue for a day: reviewed longest ago (before that day) first,
+  // never reviewed first of all, then by page number.
+  function farQueue(day) {
+    const last = {};
+    const list = sortedPages().filter((p) => memorizedBy(p, day) && !isNear(p, day));
+    list.forEach((p) => { last[p] = lastReviewBefore(p, day) || ""; });
+    return list.sort((a, b) => (last[a] < last[b] ? -1 : last[a] > last[b] ? 1 : a - b));
   }
 
   function farQuota(farCount) {
@@ -251,16 +310,18 @@ const HifzStore = (function () {
     return Math.min(plan.farPages, farCount);
   }
 
-  // Today's review: { near: [{page, done}], far: [{page, done}], extra: [{page}],
-  //   more: [pages], quota, farCount, cycleDays, doneCount, dueCount }
-  // far = today's due pages. They're chosen once a day and kept in the log
-  // (log[day].f), so ticking pages — or «➕ راجعت أكتر» — doesn't reshuffle
+  // A day's review (default today): { day, near: [{page, done}], far: [{page, done}],
+  //   extra: [{page}], more: [pages], quota, farCount, cycleDays, doneCount, dueCount,
+  //   reviewed: [pages reviewed that day] }
+  // far = that day's due pages. They're chosen once and kept in the log
+  // (log[day].f), so ticking pages — or «➕ راجعت أكثر» — doesn't reshuffle
   // the list; they're re-chosen only when the quota changes (plan edited,
-  // pages added/removed). extra = pages reviewed today beyond the list;
-  // more = the next pages of the queue, for «➕ راجعت أكتر».
-  function todayPlan() {
-    const t = today();
-    const near = sortedPages().filter((p) => isNear(p, t)).map((page) => ({ page, done: pages[page].r === t }));
+  // pages added/removed). extra = pages reviewed that day beyond the list;
+  // more = the next pages of the queue, for «➕ راجعت أكثر».
+  function planFor(dayArg) {
+    const t = validDay(dayArg) ? dayArg : today();
+    const done = (p) => isReviewedOn(p, t);
+    const near = sortedPages().filter((p) => isNear(p, t)).map((page) => ({ page, done: done(page) }));
     const queue = farQueue(t);
     const inQueue = new Set(queue);
     const quota = farQuota(queue.length);
@@ -268,25 +329,56 @@ const HifzStore = (function () {
     let list = Array.isArray(entry.f) ? entry.f.filter((p) => inQueue.has(p)) : null;
     if (!list || list.length !== quota) {
       // keep what's already ticked from the old list, fill up from the queue
-      const kept = (list || []).filter((p) => pages[p].r === t).slice(0, quota);
-      const fill = queue.filter((p) => !kept.includes(p) && pages[p].r !== t);
+      const kept = (list || []).filter(done).slice(0, quota);
+      const fill = queue.filter((p) => !kept.includes(p) && !done(p));
       list = kept.concat(fill.slice(0, quota - kept.length));
       if (list.length < quota) list = list.concat(queue.filter((p) => !list.includes(p)).slice(0, quota - list.length));
     }
     const listSet = new Set(list);
-    const far = list.map((page) => ({ page, done: pages[page].r === t }));
-    const extra = queue.filter((p) => !listSet.has(p) && pages[p].r === t).map((page) => ({ page, done: true }));
-    const more = queue.filter((p) => !listSet.has(p) && pages[p].r !== t);
+    const far = list.map((page) => ({ page, done: done(page) }));
+    const extra = queue.filter((p) => !listSet.has(p) && done(p)).map((page) => ({ page, done: true }));
+    const more = queue.filter((p) => !listSet.has(p) && !done(p));
     const cycleDays = quota ? Math.ceil(queue.length / quota) : 0;
     const dueCount = near.length + quota;
     const doneCount = near.filter((x) => x.done).length + far.filter((x) => x.done).length;
-    // remember today's list and how much was due (for the statistics' day colours)
+    // remember the day's list and how much was due (for the statistics' day colours)
     const sameList = Array.isArray(entry.f) && entry.f.length === list.length && entry.f.every((p, k) => p === list[k]);
-    if (dueCount !== entry.q || !sameList) {
+    if ((dueCount || null) !== entry.q || !sameList) {
       log[t] = { r: entry.r, q: dueCount || null, f: list };
       persist(); // no push/emit just for this; it travels with the next change
     }
-    return { near, far, extra, more, quota, farCount: queue.length, cycleDays, dueCount, doneCount };
+    return { day: t, near, far, extra, more, quota, farCount: queue.length, cycleDays, dueCount, doneCount, reviewed: reviewedOn(t) };
+  }
+  function todayPlan() { return planFor(today()); }
+
+  // ---------- what to memorize next ----------
+  // The page after the last one memorized (with a date), in the direction
+  // you're going (worked out from your last two dated pages; forward when
+  // there's only one), skipping pages already memorized.
+  // → { page, after, direction: 1 | -1 } or null
+  function nextToMemorize() {
+    const dated = sortedPages().filter((p) => pages[p].m)
+      .sort((a, b) => (pages[a].m < pages[b].m ? -1 : pages[a].m > pages[b].m ? 1 : 0));
+    if (!dated.length) return null;
+    const last = dated[dated.length - 1];
+    // pages memorized on the same last day: continue from the furthest one
+    const sameDay = dated.filter((p) => pages[p].m === pages[last].m);
+    let direction = 1;
+    const prevDay = dated.filter((p) => pages[p].m < pages[last].m);
+    const ref = prevDay.length ? prevDay[prevDay.length - 1] : (sameDay.length > 1 ? Math.min(...sameDay) : null);
+    const lastOfDay = Math.max(...sameDay);
+    const firstOfDay = Math.min(...sameDay);
+    if (ref !== null && ref > lastOfDay) direction = -1;
+    const from = direction === 1 ? lastOfDay : firstOfDay;
+    for (let p = from + direction; p >= 1 && p <= 604; p += direction) {
+      if (!pages[p]) return { page: p, after: from, direction };
+    }
+    // nothing left that way (e.g. you reached the end of the Mushaf):
+    // the first free page the other way
+    for (let p = from - direction; p >= 1 && p <= 604; p -= direction) {
+      if (!pages[p]) return { page: p, after: p + direction, direction: -direction };
+    }
+    return null;
   }
 
   // This week's memorization goal: { goal, done, start, end, daysLeft }
@@ -311,26 +403,37 @@ const HifzStore = (function () {
       weeks.unshift({ start: ws, count: n, goalMet: plan.weeklyGoal > 0 && n >= plan.weeklyGoal });
       ws = addDays(ws, -7);
     }
-    // review days, last 35 days: "full" | "extra" | "partial" | "none" | "free"
-    const days = [];
-    for (let i = 34; i >= 0; i--) {
-      const day = addDays(t, -i);
+    // review days, last 42 days (6 weeks):
+    //   "full" | "extra" (all due + more) | "partial" | "none" | "free" (before you started)
+    const firstDay = Object.keys(log).sort()[0] || t;
+    const nearCache = {};
+    function dayInfo(day) {
       const e = log[day];
-      const done = e ? e.r.length : 0;
+      const r = e ? e.r : [];
       const q = e && e.q != null ? e.q : null;
-      let state = "none";
-      if (q === null || q === 0) state = done ? "extra" : "free";
-      else if (done > q) state = "extra";
-      else if (done === q) state = "full";
-      else if (done > 0) state = "partial";
-      days.push({ day, done, due: q, state });
+      let dueDone = r.length, state;
+      if (q && Array.isArray(e.f)) { // (older entries without the day's list: count everything)
+        const dueSet = new Set((e.f || []).concat(nearCache[day] || (nearCache[day] = sortedPages().filter((p) => isNear(p, day)))));
+        dueDone = r.filter((p) => dueSet.has(p)).length;
+      }
+      if (day < firstDay) state = "free";
+      else if (!r.length) state = q || day < t ? "none" : "free";
+      else if (!q) state = "full";
+      else if (dueDone >= q) state = r.length > dueDone ? "extra" : "full";
+      else state = "partial";
+      return { day, done: r.length, dueDone: Math.min(dueDone, q || dueDone), due: q, state };
     }
-    // streak: consecutive days (back from today/yesterday) with a full review
+    const days = [];
+    for (let i = 41; i >= 0; i--) days.push(dayInfo(addDays(t, -i)));
+    // streak: consecutive days with a complete review, back from today
+    // (today not finished yet doesn't break it)
     let streak = 0;
-    for (let i = days.length - 1; i >= 0; i--) {
-      const s = days[i].state;
-      if (s === "full" || s === "extra") streak++;
-      else if (i === days.length - 1) continue; // today not finished yet doesn't break it
+    for (let i = 0; i < LOG_DAYS; i++) {
+      const day = addDays(t, -i);
+      if (day < firstDay) break;
+      const st = dayInfo(day).state;
+      if (st === "full" || st === "extra") streak++;
+      else if (i === 0) continue;
       else break;
     }
     // how long since each page was reviewed (or memorized), for the strength map
@@ -342,7 +445,7 @@ const HifzStore = (function () {
     // last 30 days; today only counts once something was reviewed
     const last30 = days.slice(-31, -1).concat(days[days.length - 1].done ? [days[days.length - 1]] : []).filter((d) => d.due);
     const reviewRate = last30.length
-      ? Math.round(100 * last30.reduce((s, d) => s + Math.min(d.done, d.due), 0) / last30.reduce((s, d) => s + d.due, 0))
+      ? Math.round(100 * last30.reduce((s, d) => s + d.dueDone, 0) / last30.reduce((s, d) => s + d.due, 0))
       : null;
     const tp = todayPlan();
     const neverReviewed = sortedPages().filter((p) => !pages[p].r).length;
@@ -396,7 +499,8 @@ const HifzStore = (function () {
     // pages
     has, all, count, info, toggle, setMany, setDate, memorizedWithin,
     // reviews & plans
-    reviewedToday, setReviewed, getPlan, setPlan, todayPlan, weekInfo, stats,
+    reviewedToday, isReviewedOn, reviewedOn, reviewDayProblem, setReviewed, lastReviewDay, missedDays,
+    getPlan, setPlan, todayPlan, planFor, nextToMemorize, weekInfo, stats,
     // helpers
     today, addDays, daysBetween,
     mergeRemote, onChange,

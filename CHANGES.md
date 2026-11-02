@@ -1,3 +1,40 @@
+# 📗 حفظي — its own tab, review mode, earlier days, tests on what you reviewed, «🎲 عشوائي» — 2026-11-02
+
+## To do on your side (once)
+1. Supabase → SQL Editor → run the whole `supabase-schema.sql` again (new: `sessions.page_set`, the «🎲» quick match). The duel Edge Function does **not** need a new deploy.
+2. Phone app: `cd mobile && npm run sync` (two new files: `hifz-ui.js`, `type-mix.js` — already in the copy list), then build.
+
+## 📗 حفظي — a tab of its own (bottom bar)
+- Was a window inside the Mushaf; now a full page. ⋮ → «📗 حفظي» opens it too. The bottom bar has 7 tabs, so two labels got shorter: «الصدارة», «ملفي».
+- **Two big buttons at the top:**
+  - **📖 تابع الحفظ** — opens the page after the last one you memorized (direction worked out from your last two dated pages; if you reached the end it looks the other way). Shows e.g. «ص ٥٥٨ — الطلاق (بعد ص ٥٥٩)».
+  - **🔁 تابع المراجعة** — opens the Mushaf in **review mode** on the next page due today (or says «✅ أتممت مراجعة اليوم»).
+- **🎯 اختبرني بكل محفوظاتي** — 📝 اختبارات on all your memorized pages.
+
+## 🔁 Review mode in the Mushaf
+- A bar under the page: «🔁 مراجعة اليوم: ٣/٨  [✅ راجعتها ← التالية]  [✕]». One tap records the page and opens the next one due. If you wander to another page, the button becomes «↩️ إلى ص …». At the end: «🎉 أتممت — إنهاء» (back to 📗 حفظي). ✕ ends the mode; what you ticked stays recorded.
+
+## 📅 Recording an earlier day
+- «📅 أسجّل مراجعة يوم: اليوم ▾» — today or any of the last 14 days (the list shows how many pages each day already has). A note says clearly which day is being recorded, with «↩️ ارجع إلى اليوم».
+- That day's list is built as it would have been that day; ticks count for that day in the plan, the calendar and the streak 🔥.
+- After a gap, a banner: «آخر مراجعة سجّلتها كانت الخميس ٢٩/١٠ (قبل ٤ أيام) … [📅 سجّل يوم الجمعة ٣٠/١٠] [لاحقًا]».
+- Checks: no future days, at most 30 days back, and a page can't be reviewed before the day it was memorized (a clear message says why).
+
+## 🎯 «اختبر حفظك» (under the review list)
+- «الأسئلة من:» ✅ what you **actually reviewed** that day (fewer or more than required) / memorized in the last 2 days / 3 days / week / all memorized. Shows how many pages and which; if there are none, says why and the buttons are off.
+- **📝 اختبار تدريبي** → 📝 اختبارات on those pages. **⏱️ تحدٍّ مع نفسك** → ⚔️ تحديات → 📝 ذاتي, prepared on those pages with «🎲 عشوائي» (a note at the top explains; nothing starts until «ابدأ الاختبار»). If a ذاتي quiz is still running it isn't thrown away — you're told to finish it first.
+- 📝 ذاتي can now ask from a set of pages (📗 محفوظاتي is in its range list too); the set is saved with the session so a resumed quiz keeps it.
+
+## 🎲 عشوائي — in 📱 محلي, 🌐 مباشر and 📝 ذاتي
+- «أنواع الأسئلة: [🎲 عشوائي] [✋ أختار بنفسي]» (🎲 by default; the choice is remembered per mode).
+- 🎲: choose the number of questions (٩ … ٣٠, steps of 3) and optionally up to 3 types you don't want («🚫 أنواع لا أريدها», folded by default). The app picks total ÷ 3 different types at random — only types that fit the chosen pages — and asks them in groups of 3, with the type's name shown before each group. If the range fits too few types it says how many questions are possible.
+- 🌐 quick match with 🎲 pairs you with someone who also chose 🎲 with the same range, timer and number of questions; the types are drawn from those you both allow.
+
+## Under the hood
+- New `hifz-ui.js` (the 📗 حفظي screen, review mode) and `type-mix.js` (🎲); the window's code moved out of `quran-reader.js`.
+- `hifz.js`: every review is stored under its day, so earlier days can be recorded and undone; the queue for a day orders pages by their last review before that day; `nextToMemorize()`, `missedDays()`, `planFor(day)`. The streak now counts back past 6 weeks; old log entries without a day's list are counted fully.
+- Database: `sessions.page_set` (locked after creation like the other fields, checked to be valid pages), `duel_queue.is_random/random_groups`, `join_quick_match_queue_random()`; the normal quick match never pairs with a 🎲 player. Tested on a local Postgres: runs on top of the previous schema and again on itself.
+
 # 📗 الحفظ والمراجعة — memorization & review plans, statistics, shorter ⋮ menu — 2026-11-01 (2)
 
 ## To do on your side (once)

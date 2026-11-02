@@ -43,6 +43,8 @@ const WEB_FILES = [
   "net-status.js",
   "notify.js",
   "hifz.js",
+  "hifz-ui.js",
+  "type-mix.js",
   "manifest.webmanifest",
 ];
 const WEB_FOLDERS = ["vendor", "fonts", "icons", "quran-index", "mushaf-layout"];

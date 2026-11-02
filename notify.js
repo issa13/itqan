@@ -360,10 +360,7 @@ const ItqanNotify = (function () {
         }
       } else if (extra && extra.open === "hifz") {
         if (extra.tab) { try { localStorage.setItem("qf_hifz_tab", extra.tab); } catch (e) { /* ignore */ } }
-        switchView("quran");
-        if (typeof openQuranModal === "function") {
-          try { openQuranModal("quranHifzModal"); } catch (e) { /* ignore */ }
-        }
+        switchView("hifz"); // 📗 حفظي
       } else if (extra && extra.open === "home") {
         switchView("home");
       } else {

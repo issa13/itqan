@@ -277,17 +277,22 @@ async function setActiveSessionId(sessionId) {
 // collected from the user anymore — the column keeps its DB default.
 // questionTypes/countPerType capture the ذاتي quiz config (countPerType
 // null means "غير محدد" — unlimited, shared across every selected type).
-async function createSession(rangeMin, rangeMax, questionTypes, countPerType) {
+// pageSet: the exact pages for a quiz on a chosen set (📗 محفوظاتي,
+// «⏱️ تحدٍّ مع نفسك» from 📗 حفظي) — sent only when there is one, so this
+// keeps working before the page_set column is added (supabase-schema.sql).
+async function createSession(rangeMin, rangeMax, questionTypes, countPerType, pageSet) {
   if (!sb || !currentUser) return null;
+  const row = {
+    user_id: currentUser.id,
+    range_min: rangeMin ?? null,
+    range_max: rangeMax ?? null,
+    question_types: questionTypes ?? null,
+    count_per_type: countPerType ?? null,
+  };
+  if (Array.isArray(pageSet) && pageSet.length) row.page_set = pageSet;
   const { data, error } = await sb
     .from("sessions")
-    .insert({
-      user_id: currentUser.id,
-      range_min: rangeMin ?? null,
-      range_max: rangeMax ?? null,
-      question_types: questionTypes ?? null,
-      count_per_type: countPerType ?? null,
-    })
+    .insert(row)
     .select()
     .single();
   if (error) {
@@ -326,7 +331,7 @@ async function ensureActiveSession() {
   if (settings?.active_session_id) {
     const { data } = await sb
       .from("sessions")
-      .select("id, range_min, range_max, question_types, count_per_type, finished_at")
+      .select("*") // page_set only exists once supabase-schema.sql has been re-run
       .eq("id", settings.active_session_id)
       .maybeSingle();
     if (data && !data.finished_at) {
@@ -336,6 +341,7 @@ async function ensureActiveSession() {
         rangeMax: data.range_max,
         questionTypes: data.question_types,
         countPerType: data.count_per_type,
+        pageSet: Array.isArray(data.page_set) && data.page_set.length ? data.page_set : null,
       };
     }
   }
@@ -873,6 +879,24 @@ async function joinQuickMatchQueue(rangeMin, rangeMax, timerSeconds, questionTyp
   if (error) {
     console.error("joinQuickMatchQueue error", error);
     return { matched: false };
+  }
+  return data || { matched: false };
+}
+
+// «🎲 عشوائي» quick match: allowedTypes = the types this player allows
+// (not excluded, fit for the range), groups = number of 3-question groups.
+async function joinQuickMatchQueueRandom(rangeMin, rangeMax, timerSeconds, allowedTypes, groups) {
+  if (!sb || !currentUser) return { matched: false, error: true };
+  const { data, error } = await sb.rpc("join_quick_match_queue_random", {
+    p_range_min: rangeMin,
+    p_range_max: rangeMax,
+    p_timer_seconds: timerSeconds,
+    p_allowed_types: allowedTypes,
+    p_groups: groups,
+  });
+  if (error) {
+    console.error("joinQuickMatchQueueRandom error", error);
+    return { matched: false, error: true };
   }
   return data || { matched: false };
 }

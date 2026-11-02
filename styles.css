@@ -2987,3 +2987,83 @@ html.is-offline #challengeOnlineWrap .offline-notice { width: 100%; margin: 12px
   .quran-page-mark { padding: 4px 2px; min-width: 0; }
   .quran-page-center:has(.quran-page-mark) .quran-page-listen { padding: 4px 4px; }
 }
+
+/* ================= 📗 حفظي (hifz-ui.js) ================= */
+.hifz-view { display: flex; flex-direction: column; gap: 12px; }
+.hifz-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.hifz-action {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: start;
+  padding: 14px 12px; border-radius: var(--radius-sm); cursor: pointer; font-family: inherit;
+  border: 1.5px solid rgba(var(--emerald-rgb), 0.35); background: var(--success-bg); color: var(--ink);
+  box-shadow: 0 6px 16px -12px rgba(var(--emerald-rgb), 0.6);
+}
+.hifz-action.mem { background: var(--emerald); border-color: var(--emerald); color: #fff; }
+.hifz-action.mem .hifz-action-sub { color: rgba(255, 255, 255, 0.85); }
+.hifz-action.done { background: var(--card); }
+.hifz-action:active { transform: translateY(1px); }
+.hifz-action-title { font-size: 16px; font-weight: 800; }
+.hifz-action-sub { font-size: 12px; color: var(--muted); line-height: 1.45; }
+.hifz-test-all { width: 100%; }
+.hifz-note {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; line-height: 1.6;
+  padding: 10px 12px; border-radius: var(--radius-sm); background: rgba(var(--gold-rgb), 0.12); border: 1px solid rgba(var(--gold-rgb), 0.35);
+}
+.hifz-note > span:first-child { flex: 1 1 220px; }
+.hifz-note.warn { background: rgba(232, 195, 90, 0.18); border-color: rgba(200, 150, 40, 0.5); }
+.hifz-note-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.hifz-note-close { border: 0; background: none; cursor: pointer; font-size: 14px; color: var(--muted); padding: 2px 6px; }
+.hifz-day-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; font-size: 13.5px; font-weight: 700; }
+.hifz-day-row select { flex: 1 1 180px; font-family: inherit; font-size: 14px; padding: 7px 8px; border-radius: 8px; border: 1.5px solid rgba(var(--ink-rgb), 0.14); background: var(--card); color: var(--ink); }
+.hifz-panel > .hifz-note { margin-bottom: 8px; }
+.hifz-card .btn.primary { align-self: flex-start; }
+.hifz-test-card { margin-top: 16px; }
+.hifz-test-card .field select { width: 100%; }
+.hifz-test-hint { font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+.hifz-test-hint.warn { color: #8a5a00; }
+.hifz-test-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.hifz-test-btn {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: start; cursor: pointer;
+  font-family: inherit; padding: 10px; border-radius: var(--radius-sm); border: 1.5px solid rgba(var(--emerald-rgb), 0.4);
+  background: var(--card); color: var(--ink);
+}
+.hifz-test-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.hifz-test-btn-title { font-weight: 800; font-size: 14px; }
+.hifz-test-btn-sub { font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+@media (max-width: 360px) {
+  .hifz-actions, .hifz-test-btns { grid-template-columns: 1fr; }
+}
+
+/* 🔁 review mode bar, under the Mushaf page */
+.quran-review-bar {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-top: 8px; padding: 6px 8px;
+  border-radius: 10px; background: var(--success-bg); border: 1px solid rgba(var(--emerald-rgb), 0.35);
+}
+.quran-review-bar-text { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 800; color: var(--accent-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quran-review-bar .btn { flex-shrink: 0; white-space: nowrap; }
+.quran-review-bar .btn.primary { background: var(--emerald); color: #fff; border-color: var(--emerald); }
+
+/* ================= «🎲 عشوائي / ✋ أختار بنفسي» (type-mix.js) ================= */
+.type-mode-toggle { margin-top: 14px; }
+.type-mode-label { font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+.type-mode-btns { display: flex; gap: 6px; background: rgba(var(--ink-rgb), 0.06); border-radius: 999px; padding: 4px; }
+.type-mode-btn {
+  flex: 1; border: none; background: transparent; padding: 8px 10px; border-radius: 999px; font-weight: 800;
+  font-size: 13px; font-family: inherit; color: var(--ink); cursor: pointer;
+}
+.type-mode-btn.active { background: var(--emerald); color: #fff; }
+.type-random-box { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.type-random-total-field { max-width: 260px; }
+.type-random-sub { font-size: 13px; font-weight: 700; }
+.type-random-sub small { font-weight: 400; color: var(--muted); }
+.type-exclude-chip { font-family: inherit; cursor: pointer; text-align: start; background: var(--card); }
+.type-exclude-chip.excluded { border-color: rgba(var(--danger-rgb), 0.6); background: var(--danger-bg); color: var(--danger); text-decoration: line-through; }
+.type-exclude-chip.locked { opacity: 0.5; }
+.type-random-summary { font-size: 12.5px; line-height: 1.7; color: var(--accent-text); background: var(--success-bg); border-radius: var(--radius-sm); padding: 8px 10px; }
+.type-random-summary.warn { color: #8a5a00; background: rgba(232, 195, 90, 0.18); }
+.type-random-summary small { color: var(--muted); }
+.hifz-test-all { border: 1.5px solid rgba(var(--emerald-rgb), 0.45) !important; font-weight: 800; }
+.type-exclude { border: 1px solid rgba(var(--gold-rgb), 0.3); border-radius: var(--radius-sm); padding: 6px 10px; }
+.type-exclude > summary { cursor: pointer; padding: 4px 0; }
+.type-exclude .challenge-types-grid { margin-top: 6px; }
+.type-random-total-field { max-width: none; }
+.type-random-total-field select { width: 100%; }

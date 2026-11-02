@@ -86,6 +86,7 @@ const bottomNavButtons = Array.from(bottomNav.querySelectorAll(".bottom-nav-btn"
 const appViews = {
   home: document.getElementById("view-home"),
   quran: document.getElementById("view-quran"),
+  hifz: document.getElementById("view-hifz"),
   profile: document.getElementById("view-profile"),
   friends: document.getElementById("view-friends"),
   leaderboard: document.getElementById("view-leaderboard"),
@@ -97,6 +98,7 @@ const appViews = {
 const TOPBAR_TITLES = {
   home: "📝 اختبارات",
   quran: "📖 القرآن",
+  hifz: "📗 حفظي",
   challenge: "⚔️ تحديات",
   leaderboard: "🏆 لوحة الصدارة",
   friends: "👥 أصدقائي",
@@ -150,6 +152,7 @@ function switchView(name, options) {
   else if (name === "friends") { showFriendsListSection(); loadFriendsModal(); }
   else if (name === "leaderboard") loadLeaderboardView();
   else if (name === "quran" && typeof enterQuranTab === "function") enterQuranTab();
+  else if (name === "hifz" && typeof renderHifzView === "function") renderHifzView();
 }
 
 bottomNavButtons.forEach((btn) => {

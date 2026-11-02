@@ -491,25 +491,39 @@ function hifzQuizRange() {
   return { minP, maxP, pages: hifzQuizSet.pages, label: hifzQuizSet.label };
 }
 
+// The «🔁 …» option in the range lists that can ask from a set of pages:
+// 📝 اختبارات, 📱 محلي and 📝 ذاتي (🌐 مباشر's server only knows ranges).
+const HIFZ_SET_SELECT_IDS = ["rangeSelect", "challengeRangeSelect", "selfRangeSelect"];
 function ensureHifzQuizOption() {
-  let opt = rangeSelect.querySelector('option[value="hifzset"]');
-  if (!hifzQuizSet) { if (opt) opt.remove(); return; }
-  if (!opt) {
-    opt = document.createElement("option");
-    opt.value = "hifzset";
-    const after = rangeSelect.querySelector('option[value="memorized"]');
-    rangeSelect.insertBefore(opt, after ? after.nextSibling : null);
-  }
-  opt.textContent = `🔁 ${hifzQuizSet.label} (${hifzQuizSet.pages.size} صفحة)`;
+  HIFZ_SET_SELECT_IDS.forEach((id) => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    let opt = sel.querySelector('option[value="hifzset"]');
+    if (!hifzQuizSet) { if (opt) opt.remove(); return; }
+    if (!opt) {
+      opt = document.createElement("option");
+      opt.value = "hifzset";
+      const after = sel.querySelector('option[value="memorized"]');
+      sel.insertBefore(opt, after ? after.nextSibling : sel.children[1] || null);
+    }
+    opt.textContent = `🔁 ${hifzQuizSet.label} (${hifzQuizSet.pages.size} ${hifzQuizSet.pages.size === 1 ? "صفحة" : hifzQuizSet.pages.size <= 10 ? "صفحات" : "صفحة"})`;
+  });
 }
 ensureHifzQuizOption();
 
-async function startHifzQuiz(pages, label) {
-  const list = Array.from(new Set(pages)).filter((p) => p >= 1 && p <= 604).sort((a, b) => a - b);
+// Remembers a set of pages as «🔁 label» → false if it's empty.
+function setHifzQuizSet(pages, label) {
+  const list = Array.from(new Set(pages)).map(Number).filter((p) => p >= 1 && p <= 604).sort((a, b) => a - b);
   if (!list.length) return false;
   hifzQuizSet = { label, pages: new Set(list) };
   try { localStorage.setItem(HIFZ_QUIZ_KEY, JSON.stringify({ label, pages: list })); } catch (e) { /* ignore */ }
   ensureHifzQuizOption();
+  return true;
+}
+
+// 📗 حفظي → «📝 اختبار تدريبي»: 📝 اختبارات on these pages.
+async function startHifzQuiz(pages, label) {
+  if (!setHifzQuizSet(pages, label)) return false;
   rangeSelect.value = "hifzset";
   showHideCustomRange();
   await refreshQuestionTypeAvailability();
@@ -2105,6 +2119,11 @@ const CHALLENGE_TYPES = [
   "juz", "ayahNumber", "listenNext", "rightLeft", "completeAyah", "mutashabih",
 ];
 const CHALLENGE_MIN_TYPES = 3;
+// «🎲 عشوائي / ✋ أختار بنفسي» for each setup (type-mix.js) — created at
+// each setup's init below; null until then.
+let challengeTypePicker = null;
+let selfTypePicker = null;
+let duelTypePicker = null;
 const CHALLENGE_MIN_PLAYERS = 2;
 const CHALLENGE_MAX_PLAYERS = 4;
 
@@ -2280,15 +2299,19 @@ async function refreshChallengeStartAvailability() {
   const names = challengePlayers.map((p) => p.name.trim());
   const validNames = names.length >= CHALLENGE_MIN_PLAYERS && names.every((n) => n.length > 0);
   const uniqueNames = new Set(names.map((n) => n.toLowerCase())).size === names.length;
+  const random = !!challengeTypePicker && challengeTypePicker.isRandom();
   const selectedTypes = getSelectedChallengeTypes();
-  const enoughTypes = selectedTypes.length >= CHALLENGE_MIN_TYPES;
+  const enoughTypes = random || selectedTypes.length >= CHALLENGE_MIN_TYPES;
 
   let msg = "";
   if (!validNames) msg = "أدخل اسمًا لكل لاعب (لاعبان على الأقل).";
   else if (!uniqueNames) msg = "الأسماء يجب أن تكون مختلفة عن بعضها.";
   else if (!enoughTypes) msg = `اختر ${CHALLENGE_MIN_TYPES} أنواع أسئلة على الأقل.`;
 
-  if (!msg) {
+  if (!msg && random) {
+    const range = resolveRangeBounds(challengeRangeSelect.value, challengeCustomMin.value, challengeCustomMax.value);
+    msg = (await challengeTypePicker.check(range)).msg;
+  } else if (!msg) {
     const range = resolveRangeBounds(challengeRangeSelect.value, challengeCustomMin.value, challengeCustomMax.value);
     for (const type of selectedTypes) {
       const blocked = await challengeTypeBlockMessage(type, range.minP, range.maxP, range.pages);
@@ -2328,9 +2351,16 @@ function renderChallengeScoreboard() {
 }
 
 challengeStartBtn.addEventListener("click", async () => {
-  const selectedTypes = getSelectedChallengeTypes();
+  let selectedTypes = getSelectedChallengeTypes();
   const range = resolveRangeBounds(challengeRangeSelect.value, challengeCustomMin.value, challengeCustomMax.value);
-  const count = parseInt(challengeCountSelect.value, 10) || 5;
+  let count = parseInt(challengeCountSelect.value, 10) || 5;
+  if (challengeTypePicker.isRandom()) {
+    // 🎲: the types are picked now, from those that fit the range
+    const check = await challengeTypePicker.check(range);
+    if (check.msg) { challengeSetupError.textContent = check.msg; return; }
+    selectedTypes = challengeTypePicker.pick(check.fit);
+    count = TYPE_MIX_GROUP;
+  }
 
   challengePlayers = challengePlayers.map((p) => ({ name: p.name.trim(), score: 0 }));
   challengeRangeMinP = range.minP;
@@ -2642,6 +2672,12 @@ challengeNewBtn.addEventListener("click", resetChallengeToSetup);
 
 // -------- init --------
 renderChallengeTypesGrid();
+challengeTypePicker = createTypeModePicker({
+  key: "offline",
+  gridField: challengeTypesGrid.closest(".field"),
+  countField: challengeCountSelect.closest(".field"),
+  onChange: () => refreshChallengeStartAvailability(),
+});
 resetChallengeToSetup();
 
 // ============================================================
@@ -3028,11 +3064,15 @@ function getSelectedDuelTypes() {
 // against the duel's own range picker.
 async function refreshDuelConfigAvailability() {
   const myToken = ++duelValidationToken;
+  const random = !!duelTypePicker && duelTypePicker.isRandom();
   const selectedTypes = getSelectedDuelTypes();
   let msg = "";
-  if (selectedTypes.length < CHALLENGE_MIN_TYPES) msg = `اختر ${CHALLENGE_MIN_TYPES} أنواع أسئلة على الأقل.`;
+  if (!random && selectedTypes.length < CHALLENGE_MIN_TYPES) msg = `اختر ${CHALLENGE_MIN_TYPES} أنواع أسئلة على الأقل.`;
 
-  if (!msg) {
+  if (!msg && random) {
+    const range = resolveRangeBounds(duelRangeSelect.value, duelCustomMin.value, duelCustomMax.value);
+    msg = (await duelTypePicker.check(range)).msg;
+  } else if (!msg) {
     const range = resolveRangeBounds(duelRangeSelect.value, duelCustomMin.value, duelCustomMax.value);
     for (const type of selectedTypes) {
       const blocked = await challengeTypeBlockMessage(type, range.minP, range.maxP);
@@ -3056,16 +3096,33 @@ async function createDuelForContext(context, range, timerSeconds, types, count) 
 }
 
 duelSubmitBtn.addEventListener("click", async () => {
-  const selectedTypes = getSelectedDuelTypes();
+  let selectedTypes = getSelectedDuelTypes();
   const range = resolveRangeBounds(duelRangeSelect.value, duelCustomMin.value, duelCustomMax.value);
   const timerSeconds = parseInt(duelTimerSelect.value, 10) || 15;
-  const count = parseInt(duelCountSelect.value, 10) || 5;
+  let count = parseInt(duelCountSelect.value, 10) || 5;
+  const random = duelTypePicker.isRandom();
+  let randomFit = null;
+  if (random) {
+    const check = await duelTypePicker.check(range);
+    if (check.msg) { duelConfigError.textContent = check.msg; return; }
+    randomFit = check.fit;
+    selectedTypes = duelTypePicker.pick(check.fit);
+    count = TYPE_MIX_GROUP;
+  }
 
   duelSubmitBtn.disabled = true;
 
   if (duelConfigContext.kind === "quickmatch") {
-    const result = await joinQuickMatchQueue(range.minP, range.maxP, timerSeconds, selectedTypes, count);
+    // 🎲: matched with someone who also chose 🎲, the same range, timer and
+    // number of questions; the types are drawn from what you both allow.
+    const result = random
+      ? await joinQuickMatchQueueRandom(range.minP, range.maxP, timerSeconds, randomFit, duelTypePicker.groups())
+      : await joinQuickMatchQueue(range.minP, range.maxP, timerSeconds, selectedTypes, count);
     duelSubmitBtn.disabled = false;
+    if (result.error) {
+      alert("تعذّر الانضمام إلى البحث عن خصم. إن كان التطبيق قد حُدِّث للتو فربما لم تُحدَّث قاعدة البيانات بعد — حاول لاحقًا.");
+      return;
+    }
 
     if (result.matched) {
       const duel = await fetchDuelState(result.duelId);
@@ -3076,7 +3133,9 @@ duelSubmitBtn.addEventListener("click", async () => {
       showDuelWaiting("جارٍ التحضير", "تم إيجاد خصم! جارٍ تحضير الأسئلة...", null);
       await hostGenerateQuestionsAndWatch(result.duelId);
     } else {
-      showDuelWaiting("جارٍ البحث", "جارٍ البحث عن خصم بنفس الإعدادات بالضبط...", leaveQueueAndReturn, "إلغاء البحث");
+      showDuelWaiting("جارٍ البحث", random
+        ? "جارٍ البحث عن خصم اختار «🎲 عشوائي» بنفس النطاق والمؤقت وعدد الأسئلة..."
+        : "جارٍ البحث عن خصم بنفس الإعدادات بالضبط...", leaveQueueAndReturn, "إلغاء البحث");
       startQuickMatchWaitPoll();
     }
     return;
@@ -3933,6 +3992,12 @@ async function onDuelInviteAccepted(id) {
 
 // -------- init --------
 renderDuelTypesGrid();
+duelTypePicker = createTypeModePicker({
+  key: "online",
+  gridField: duelTypesGrid.closest(".field"),
+  countField: duelCountSelect.closest(".field"),
+  onChange: () => refreshDuelConfigAvailability(),
+});
 showHideDuelCustomRange();
 
 // ============================================================
@@ -4017,6 +4082,7 @@ function syncActiveSessionId(id) { selfActiveSessionId = id; }
 
 let selfRangeMinP = null;
 let selfRangeMaxP = null;
+let selfRangePages = null; // Set of pages for a quiz on a chosen set (📗 محفوظاتي / 🔁 …), else null
 let selfTimerSeconds = 30;
 let selfSelectedTypes = [];
 let selfCountPerType = null; // null = غير محدد (unlimited, shared across every selected type)
@@ -4136,16 +4202,20 @@ selfRangeSelect.addEventListener("change", () => { showHideSelfCustomRange(); re
 let selfValidationToken = 0;
 async function refreshSelfStartAvailability() {
   const myToken = ++selfValidationToken;
+  const random = !!selfTypePicker && selfTypePicker.isRandom();
   const selectedTypes = getSelectedSelfTypes();
-  const enoughTypes = selectedTypes.length >= SELF_MIN_TYPES;
+  const enoughTypes = random || selectedTypes.length >= SELF_MIN_TYPES;
 
   let msg = "";
   if (!enoughTypes) msg = "اختر نوع سؤال واحدًا على الأقل.";
+  const range = resolveRangeBounds(selfRangeSelect.value, selfCustomMin.value, selfCustomMax.value);
+  if (!msg && range.pages && !range.pages.size) msg = "لا صفحات في هذا النطاق بعد — علّم محفوظاتك من «📗 حفظي» أولًا.";
 
-  if (!msg) {
-    const range = resolveRangeBounds(selfRangeSelect.value, selfCustomMin.value, selfCustomMax.value);
+  if (!msg && random) {
+    msg = (await selfTypePicker.check(range)).msg;
+  } else if (!msg) {
     for (const type of selectedTypes) {
-      const blocked = await challengeTypeBlockMessage(type, range.minP, range.maxP);
+      const blocked = await challengeTypeBlockMessage(type, range.minP, range.maxP, range.pages);
       if (blocked) { msg = `"${getTypeLabel(type)}": ${blocked}`; break; }
     }
   }
@@ -4188,13 +4258,22 @@ function replenishSelfQueueIfNeeded() {
 
 // -------- starting / resuming --------
 selfStartBtn.addEventListener("click", async () => {
-  const selectedTypes = getSelectedSelfTypes();
+  let selectedTypes = getSelectedSelfTypes();
   const range = resolveRangeBounds(selfRangeSelect.value, selfCustomMin.value, selfCustomMax.value);
   const rawCount = selfCountSelect.value;
-  const countPerType = rawCount === "unlimited" ? null : (parseInt(rawCount, 10) || 5);
+  let countPerType = rawCount === "unlimited" ? null : (parseInt(rawCount, 10) || 5);
+  if (selfTypePicker.isRandom()) {
+    // 🎲: the types are picked now, from those that fit the range
+    const check = await selfTypePicker.check(range);
+    if (check.msg) { selfSetupError.textContent = check.msg; return; }
+    selectedTypes = selfTypePicker.pick(check.fit);
+    countPerType = TYPE_MIX_GROUP;
+  }
+  selfStartBtn.disabled = true; // no double start while the session is created
 
   selfRangeMinP = range.minP;
   selfRangeMaxP = range.maxP;
+  selfRangePages = range.pages && range.pages.size ? new Set(range.pages) : null;
   selfTimerSeconds = parseInt(selfTimerSelect.value, 10) || 0;
   selfSelectedTypes = selectedTypes;
   selfCountPerType = countPerType;
@@ -4208,7 +4287,8 @@ selfStartBtn.addEventListener("click", async () => {
   resetSelfRunTracking();
 
   if (currentUser && typeof createSession === "function") {
-    const newId = await createSession(range.minP, range.maxP, selectedTypes, countPerType);
+    const newId = await createSession(range.minP, range.maxP, selectedTypes, countPerType,
+      selfRangePages ? Array.from(selfRangePages).sort((a, b) => a - b) : null);
     syncActiveSessionId(newId);
   } else {
     syncActiveSessionId(null); // guest — fully ephemeral, nothing persisted
@@ -4224,6 +4304,8 @@ selfStartBtn.addEventListener("click", async () => {
   }
 
   updateSelfScoreBox();
+  selfStartBtn.disabled = false;
+  hideSelfPresetNote();
   selfSetupSection.style.display = "none";
   selfResultsSection.style.display = "none";
   selfPlaySection.style.display = "block";
@@ -4244,6 +4326,7 @@ async function enterSelfChallengeMode() {
     if (active && active.questionTypes && active.questionTypes.length) {
       selfRangeMinP = active.rangeMin;
       selfRangeMaxP = active.rangeMax;
+      selfRangePages = active.pageSet ? new Set(active.pageSet) : null;
       selfSelectedTypes = active.questionTypes;
       selfCountPerType = active.countPerType;
       selfUnlimited = active.countPerType == null;
@@ -4500,7 +4583,7 @@ async function proceedToSelfQuestion() {
   const type = selfQueue.shift();
 
   // Never repeats a question (same ayah + same type) within a challenge.
-  const gen = await generateUniqueQuestion(type, selfRangeMinP, selfRangeMaxP, selfUsedKeys);
+  const gen = await generateUniqueQuestion(type, selfRangeMinP, selfRangeMaxP, selfUsedKeys, selfRangePages);
   if (gen.status !== "ok") {
     if (gen.status === "exhausted") handleSelfTypeExhausted(type);
     else selfConsecutiveFailures++;
@@ -4660,6 +4743,8 @@ function resetSelfToSetup() {
   selfRangeSelect.value = "custom";
   selfCustomMin.value = 1;
   selfCustomMax.value = 604;
+  selfRangePages = null;
+  hideSelfPresetNote();
   showHideSelfCustomRange();
   selfTimerSelect.value = "30";
   selfCountSelect.value = "5";
@@ -4671,8 +4756,52 @@ function resetSelfToSetup() {
 }
 selfBackToSetupBtn.addEventListener("click", resetSelfToSetup);
 
+// -------- ⏱️ تحدٍّ مع نفسك (from 📗 حفظي) --------
+// Opens ⚔️ تحديات → ذاتي ready to go on a set of pages (e.g. the pages you
+// reviewed): range «🔁 …», types «🎲 عشوائي». Nothing starts by itself —
+// the note at the top says what's prepared and «ابدأ الاختبار» starts it.
+const selfPresetNote = document.getElementById("selfPresetNote");
+function hideSelfPresetNote() { if (selfPresetNote) selfPresetNote.style.display = "none"; }
+if (selfPresetNote) {
+  selfPresetNote.querySelector("[data-close]").addEventListener("click", hideSelfPresetNote);
+}
+selfRangeSelect.addEventListener("change", () => { if (selfRangeSelect.value !== "hifzset") hideSelfPresetNote(); });
+
+async function openSelfChallengeOnPages(pages, label) {
+  if (!setHifzQuizSet(pages, label)) return false;
+  switchView("challenge");
+  challengeModeToggle.querySelectorAll(".challenge-mode-btn").forEach((b) => b.classList.toggle("active", b.dataset.mode === "self"));
+  challengeOfflineWrap.style.display = "none";
+  challengeOnlineWrap.style.display = "none";
+  challengeSelfWrap.style.display = "block";
+  switchDuelScreen(null);
+  await enterSelfChallengeMode();
+  if (selfSetupSection.style.display === "none") {
+    // a ذاتي quiz is still running — don't throw it away
+    if (typeof showInfoToast === "function") showInfoToast("عندك اختبار ذاتي لم ينتهِ بعد — أكمله أو اضغط «إنهاء الاختبار»، ثم ارجع إلى «⏱️ تحدٍّ مع نفسك».");
+    return false;
+  }
+  selfRangeSelect.value = "hifzset";
+  showHideSelfCustomRange();
+  if (selfTypePicker) selfTypePicker.setMode("random"); // also re-checks the start button
+  else refreshSelfStartAvailability();
+  if (selfPresetNote) {
+    selfPresetNote.querySelector("[data-text]").textContent =
+      `⏱️ تحدٍّ مع نفسك على «${label}» (${typeof hifzPagesWord === "function" ? hifzPagesWord(hifzQuizSet.pages.size) : hifzQuizSet.pages.size}). اختر عدد الأسئلة والمؤقت إن شئت، ثم اضغط «ابدأ الاختبار». النتيجة تُحفظ في «📊 الجلسات».`;
+    selfPresetNote.style.display = "";
+  }
+  selfSetupSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  return true;
+}
+
 // -------- init --------
 renderSelfTypesGrid();
+selfTypePicker = createTypeModePicker({
+  key: "self",
+  gridField: selfTypesGrid.closest(".field"),
+  countField: selfCountSelect.closest(".field"),
+  onChange: () => refreshSelfStartAvailability(),
+});
 resetSelfToSetup();
 
 generateBtn.addEventListener("click", generateCard);
@@ -4770,6 +4899,7 @@ if (typeof HifzStore !== "undefined") {
     refreshMemorizedOptions();
     if (rangeSelect.value === "memorized") refreshQuestionTypeAvailability();
     if (challengeRangeSelect.value === "memorized") refreshChallengeStartAvailability();
+    if (selfRangeSelect.value === "memorized" && selfSetupSection.style.display !== "none") refreshSelfStartAvailability();
   });
 }
 

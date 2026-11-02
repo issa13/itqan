@@ -167,6 +167,7 @@ begin
        or new.range_max is distinct from old.range_max
        or new.question_types is distinct from old.question_types
        or new.count_per_type is distinct from old.count_per_type
+       or new.page_set is distinct from old.page_set
        or (old.finished_at is not null and new.finished_at is distinct from old.finished_at)
     then
       raise exception 'session_field_locked';
@@ -226,6 +227,20 @@ end $$;
 -- JSON object. memorized_pages above stays for older versions of the app.
 alter table public.user_settings
   add column if not exists hifz jsonb;
+
+-- ⚔️ ذاتي on a chosen set of pages (📗 محفوظاتي, or «⏱️ تحدٍّ مع نفسك»
+-- from 📗 حفظي on the pages you reviewed): the exact pages, so a resumed
+-- quiz asks from the same set. null = the whole range_min…range_max.
+alter table public.sessions
+  add column if not exists page_set int[];
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'sessions_page_set_valid') then
+    alter table public.sessions
+      add constraint sessions_page_set_valid check (public.valid_page_list(page_set));
+  end if;
+end $$;
 
 do $$
 begin
@@ -1540,6 +1555,13 @@ create table if not exists public.duel_queue (
   joined_at timestamptz not null default now()
 );
 
+-- «🎲 عشوائي» quick match (join_quick_match_queue_random below): the
+-- row's question_types are the types this player ALLOWS (not excluded,
+-- fit for the range); random_groups = how many 3-question groups.
+alter table public.duel_queue
+  add column if not exists is_random boolean not null default false,
+  add column if not exists random_groups int;
+
 alter table public.duel_queue enable row level security;
 
 drop policy if exists "Users can view their own queue row" on public.duel_queue;
@@ -1810,6 +1832,7 @@ begin
     and timer_seconds = coalesce(p_timer_seconds, 15)
     and count_per_type = p_count_per_type
     and question_types = v_types
+    and not is_random
   order by joined_at asc
   limit 1
   for update skip locked;
@@ -1840,6 +1863,104 @@ end;
 $$;
 
 grant execute on function public.join_quick_match_queue(int, int, int, text[], int) to authenticated;
+
+-- 24b) join_quick_match_queue_random(): quick match with «🎲 عشوائي»
+--     types. Each player sends the types they allow (everything they
+--     didn't exclude that fits the range) and the number of 3-question
+--     groups. Two players match when the range, timer and number of
+--     groups are the same and they share at least that many allowed
+--     types; the duel then gets that many of the shared types, picked
+--     at random, 3 questions each (the question function shuffles the
+--     order of the groups).
+create or replace function public.join_quick_match_queue_random(
+  p_range_min int,
+  p_range_max int,
+  p_timer_seconds int,
+  p_allowed_types text[],
+  p_groups int
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_types text[];
+  v_pick text[];
+  v_match record;
+  v_duel_id bigint;
+begin
+  if v_uid is null then
+    raise exception 'not_authenticated';
+  end if;
+  if not public.valid_question_types(p_allowed_types) then
+    raise exception 'invalid_question_types';
+  end if;
+  if p_groups is null or p_groups < 3 or p_groups > 10 or array_length(p_allowed_types, 1) < p_groups then
+    raise exception 'invalid_count';
+  end if;
+  if p_range_min is null or p_range_max is null or p_range_min < 1 or p_range_max > 604 or p_range_min >= p_range_max then
+    raise exception 'invalid_range';
+  end if;
+  if p_timer_seconds is not null and (p_timer_seconds < 5 or p_timer_seconds > 60) then
+    raise exception 'invalid_timer';
+  end if;
+
+  select array(select unnest(p_allowed_types) order by 1) into v_types;
+
+  delete from public.duel_queue where user_id = v_uid;
+  delete from public.duel_queue where joined_at < now() - interval '2 minutes';
+
+  select * into v_match
+  from public.duel_queue q
+  where q.user_id <> v_uid
+    and q.is_random
+    and q.random_groups = p_groups
+    and q.range_min = p_range_min
+    and q.range_max = p_range_max
+    and q.timer_seconds = coalesce(p_timer_seconds, 15)
+    and (select count(*) from unnest(q.question_types) t where t = any(v_types)) >= p_groups
+  order by q.joined_at asc
+  limit 1
+  for update skip locked;
+
+  if v_match.user_id is not null then
+    delete from public.duel_queue where user_id = v_match.user_id;
+
+    select array(
+      select x from (
+        select t as x from unnest(v_types) t
+        where t = any(v_match.question_types)
+        order by random()
+        limit p_groups
+      ) picked
+      order by 1
+    ) into v_pick;
+
+    insert into public.duels (
+      created_by, opponent_id, status, is_quick_match,
+      range_min, range_max, timer_seconds, question_types, count_per_type
+    ) values (
+      v_uid, v_match.user_id, 'accepted', true,
+      p_range_min, p_range_max, coalesce(p_timer_seconds, 15), v_pick, 3
+    )
+    returning id into v_duel_id;
+
+    return jsonb_build_object('matched', true, 'duelId', v_duel_id, 'isHost', true);
+  end if;
+
+  insert into public.duel_queue (
+    user_id, range_min, range_max, timer_seconds, question_types, count_per_type, is_random, random_groups
+  ) values (
+    v_uid, p_range_min, p_range_max, coalesce(p_timer_seconds, 15), v_types, 3, true, p_groups
+  );
+
+  return jsonb_build_object('matched', false);
+end;
+$$;
+
+grant execute on function public.join_quick_match_queue_random(int, int, int, text[], int) to authenticated;
 
 -- Called both when someone deliberately cancels waiting, and by the
 -- matched-with side to clean up their own row (see join above).
@@ -2314,6 +2435,7 @@ grant execute on function public.create_direct_duel(uuid, int, int, int, text[],
 grant execute on function public.respond_duel_invite(bigint, boolean) to authenticated;
 grant execute on function public.cancel_duel(bigint) to authenticated;
 grant execute on function public.join_quick_match_queue(int, int, int, text[], int) to authenticated;
+grant execute on function public.join_quick_match_queue_random(int, int, int, text[], int) to authenticated;
 grant execute on function public.leave_quick_match_queue() to authenticated;
 grant execute on function public.submit_duel_answer(bigint, int, int) to authenticated;
 grant execute on function public.advance_duel_question(bigint, int) to authenticated;
