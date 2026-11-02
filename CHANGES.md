@@ -1,3 +1,20 @@
+# ⏱️ Days in your own time zone, daily XP limit — 2026-11-02 (3)
+
+## To do on your side (once)
+1. Supabase → SQL Editor → run the whole `supabase-schema.sql` again. (No Edge Function deploy.)
+2. Phone app: `cd mobile && npm run sync`, then build.
+
+## Days counted in your own time zone
+- The app sends the phone's / browser's time zone (e.g. `Asia/Beirut`) when you sign in → new `user_settings.time_zone` (an unknown name is stored as empty = UTC, never an error).
+- The server counts days in it: the activity heatmap and «🔥 التتابع» in 👤, the day-streak XP bonus (×1.25 / ×1.5) and the streak badges. An answer at 1 AM in Beirut now counts for that day, not the day before. A friend's heatmap uses the friend's own time zone.
+- The app's streak strip also uses local dates now (it compared with UTC dates before).
+
+## XP that can't be collected by a script
+- Checking answers on the server wouldn't stop a script: the whole Quran text is public, so a script can always answer correctly. What actually limits it:
+  - **Daily XP limit: 5,000** (about 300 correct answers — far more than a person earns in a day). Past it answers still count for accuracy, sessions, the leaderboard and badges, just without XP; a one-time note says so («🌙 وصلت إلى حدّ اليوم من الـ XP…»). The day is the user's own day.
+  - **At most one answer every 0.8 s** (was 0.35 s) — nobody reads a question and answers that fast. An answer that comes too soon isn't lost: the app keeps it and sends it again a moment later (it used to be dropped silently). Answers saved offline are sent one per 0.9 s.
+- Still true (needs a bigger redesign): the 🏆 leaderboard is ranked by accuracy, which a script answering correctly could reach. The real fix is server-made questions with a time limit, as ⚔️ مباشر already does.
+
 # 🔍 Full check of the project — 2026-11-02 (2)
 
 ## To do on your side (once)
@@ -18,10 +35,6 @@
 - **Answers outside a page set** are no longer counted in that session (still count for XP and stats, like answers outside a range).
 - **Speed with a long history:** the review queue used to look through the whole review history for every page; it now builds an index once (2 years × 604 pages: ~4 ms per plan).
 - A stray `</div>` at the end of index.html.
-
-## Known, not changed (bigger decisions)
-- **XP trusts the app:** whether an answer was right is reported by the app, so someone calling the API directly could collect XP (at most one answer per 350 ms). Fixing it means checking answers on the server, as duels already do.
-- **Days are counted in UTC on the server** (the profile heatmap, the day-streak XP bonus): in Lebanon, answers between midnight and 2–3 AM count for the previous day.
 
 # 📗 حفظي — its own tab, review mode, earlier days, tests on what you reviewed, «🎲 عشوائي» — 2026-11-02
 

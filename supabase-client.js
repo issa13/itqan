@@ -468,6 +468,14 @@ async function recordAttempt({ questionType, page, isCorrect, sessionId, rangeMi
     console.error("recordAttempt error", error);
     return { ok: false, newlyEarned: [], xp: null, xpGained: 0, currentStreak: 0 };
   }
+  if (data && data.throttled) {
+    // Came too soon after the previous answer (the server takes one per
+    // 0.8 s) and was NOT saved — keep it and send it again shortly.
+    queueAttempt(params);
+    setTimeout(() => { flushAttemptQueue(); }, 1200);
+    return { ok: false, queued: true, newlyEarned: [], xp: null, xpGained: 0, currentStreak: 0 };
+  }
+  if (data && data.xpCapped) noteDailyXpCap(data.dailyXpCap);
   return {
     ok: true,
     newlyEarned: Array.isArray(data?.earned) ? data.earned : [],
@@ -477,9 +485,44 @@ async function recordAttempt({ questionType, page, isCorrect, sessionId, rangeMi
   };
 }
 
+// The daily XP limit (record_attempt(), supabase-schema.sql): once a day,
+// say so — otherwise XP would just silently stop going up.
+const DAILY_XP_CAP = 5000;
+function noteDailyXpCap(cap) {
+  const today = new Date();
+  const key = `${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
+  try {
+    if (localStorage.getItem("qf_xp_cap_noted") === key) return;
+    localStorage.setItem("qf_xp_cap_noted", key);
+  } catch (e) { /* ignore */ }
+  const n = String(cap || DAILY_XP_CAP).replace(/\d/g, (d) => "٠١٢٣٤٥٦٧٨٩"[d]);
+  if (typeof showInfoToast === "function") {
+    showInfoToast(`🌙 وصلت إلى حدّ اليوم من الـ XP (${n}). إجاباتك ما زالت تُحسب في الدقة والجلسات والأوسمة، ويعود الـ XP غدًا.`);
+  }
+}
+
+// This device's time zone (e.g. "Asia/Beirut") → user_settings.time_zone,
+// so the server counts days (heatmap, day streak, daily XP limit) in the
+// user's own time instead of UTC. Only sent when it changed. Its own
+// request, so settings keep saving even before the column exists.
+function localTimeZone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch (e) { return null; }
+}
+async function syncTimeZone(savedZone) {
+  if (!sb || !currentUser) return;
+  const tz = localTimeZone();
+  if (!tz || tz === savedZone) return;
+  if (typeof Net !== "undefined" && !Net.isOnline()) return;
+  const { error } = await sb.from("user_settings").upsert(
+    { user_id: currentUser.id, time_zone: tz },
+    { onConflict: "user_id" }
+  );
+  if (error) console.warn("syncTimeZone", error.message);
+}
+
 // -------- answers given offline: saved here, synced later --------
 // Per account, in localStorage, oldest first. Sent one by one (the server
-// accepts at most one answer per 350 ms) when the connection comes back,
+// accepts at most one answer per 0.8 s) when the connection comes back,
 // at sign-in, and at start-up.
 const ATTEMPT_QUEUE_PREFIX = "qf_pending_attempts:";
 const ATTEMPT_QUEUE_MAX = 2000;
@@ -525,20 +568,21 @@ function flushAttemptQueue() {
         if (/rate|too many|350/i.test(error.message || "")) { await new Promise((r) => setTimeout(r, 800)); continue; }
         console.error("queued attempt rejected", error); // invalid now (e.g. session deleted) — drop it
       } else if (data && data.throttled) {
-        // The server keeps at most one answer per 350 ms and returns
+        // The server keeps at most one answer per 0.8 s and returns
         // { throttled: true } WITHOUT saving it (e.g. a live answer landed at
         // the same moment) — wait and send the same answer again.
-        await new Promise((r) => setTimeout(r, 800));
+        await new Promise((r) => setTimeout(r, 1000));
         continue;
       } else {
         sent += 1;
+        if (data && data.xpCapped) noteDailyXpCap(data.dailyXpCap);
         if (Array.isArray(data?.earned)) earned.push(...data.earned);
         if (typeof data?.xp === "number") xp = data.xp;
       }
       list = list.slice(1);
       writeAttemptQueue(uid, list);
       attemptQueueListeners.forEach((fn) => { try { fn(list.length); } catch (e) { /* ignore */ } });
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 900)); // the server takes one answer per 0.8 s
     }
     return { sent, earned, xp };
   })().finally(() => { flushingAttempts = null; });

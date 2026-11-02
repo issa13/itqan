@@ -228,6 +228,47 @@ end $$;
 alter table public.user_settings
   add column if not exists hifz jsonb;
 
+-- The user's own time zone (IANA name, e.g. "Asia/Beirut"), sent by the
+-- app. Days — the activity heatmap, the day streak and its XP bonus, the
+-- daily XP limit — are counted in it, so an answer at 1 AM in Beirut
+-- counts for that day, not the previous one (UTC). An unknown name is
+-- stored as null (= UTC) instead of breaking anything.
+alter table public.user_settings
+  add column if not exists time_zone text;
+
+create or replace function public.user_settings_check_time_zone()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.time_zone is not null then
+    begin
+      perform now() at time zone new.time_zone;
+      if length(new.time_zone) > 64 then new.time_zone := null; end if;
+    exception when others then
+      new.time_zone := null;
+    end;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists user_settings_check_time_zone on public.user_settings;
+create trigger user_settings_check_time_zone
+  before insert or update of time_zone on public.user_settings
+  for each row execute function public.user_settings_check_time_zone();
+
+-- The time zone to count a user's days in ('UTC' when unknown). Used
+-- inside record_attempt() / get_friend_profile(), which run as the owner.
+create or replace function public.user_time_zone(p_user_id uuid)
+returns text
+language sql
+stable
+set search_path = public
+as $$
+  select coalesce((select time_zone from public.user_settings where user_id = p_user_id), 'UTC');
+$$;
+
 -- ⚔️ ذاتي on a chosen set of pages (📗 محفوظاتي, or «⏱️ تحدٍّ مع نفسك»
 -- from 📗 حفظي on the pages you reviewed): the exact pages, so a resumed
 -- quiz asks from the same set. null = the whole range_min…range_max.
@@ -307,6 +348,12 @@ create table if not exists public.user_stats (
 
 alter table public.user_stats
   add column if not exists last_attempt_at timestamptz;
+
+-- Daily XP limit (record_attempt): XP earned on xp_day (the user's own
+-- date). Past the limit answers still count everywhere except XP.
+alter table public.user_stats
+  add column if not exists xp_day date,
+  add column if not exists xp_today int not null default 0;
 
 alter table public.user_stats enable row level security;
 
@@ -494,7 +541,7 @@ create policy "Users view their own achievements"
 --    server's clock_timestamp() is UTC and wouldn't reflect the
 --    person's actual morning/evening/weekend.
 --
---    Rate limited to one recorded attempt per 350ms per user (well
+--    Rate limited to one recorded attempt per 800ms per user (well
 --    under any realistic "read the question, tap a choice" pace) —
 --    calls faster than that are silently no-ops (current xp is still
 --    returned so the client doesn't error), which quietly caps
@@ -546,10 +593,18 @@ declare
   v_code text;
   v_earned text[] := '{}';
   v_owns_session boolean;
+  v_tz text;
+  v_today date;
+  v_xp_day date;
+  v_xp_today int;
+  v_capped boolean := false;
+  c_daily_xp_cap constant int := 5000; -- keep in step with DAILY_XP_CAP in supabase-client.js
 begin
   if v_uid is null then
     raise exception 'not_authenticated';
   end if;
+  v_tz := public.user_time_zone(v_uid);
+  v_today := (clock_timestamp() at time zone v_tz)::date;
 
   -- Input validation: this function is callable directly through the
   -- REST API, so nothing the browser sends is trusted blindly. A bogus
@@ -592,10 +647,14 @@ begin
     end if;
   end if;
 
-  select xp, last_attempt_at, current_streak into v_xp, v_last_attempt_at, v_old_streak
+  select xp, last_attempt_at, current_streak, xp_day, xp_today
+    into v_xp, v_last_attempt_at, v_old_streak, v_xp_day, v_xp_today
   from public.user_stats where user_id = v_uid;
+  if v_xp_day is distinct from v_today then v_xp_today := 0; end if;
 
-  if v_last_attempt_at is not null and clock_timestamp() - v_last_attempt_at < interval '350 milliseconds' then
+  -- Nobody reads a question and answers it in under 0.8 s; faster calls
+  -- are a script. Not saved — the app waits and sends them again.
+  if v_last_attempt_at is not null and clock_timestamp() - v_last_attempt_at < interval '800 milliseconds' then
     -- 'throttled' tells the app this answer was NOT saved, so an answer
     -- synced from the offline queue is retried instead of silently lost.
     return jsonb_build_object(
@@ -625,7 +684,7 @@ begin
   -- down for the streak_days_* badges) so it can also drive this
   -- call's XP multiplier below.
   with days as (
-    select distinct (created_at at time zone 'utc')::date as d
+    select distinct (created_at at time zone v_tz)::date as d
     from public.attempts where user_id = v_uid
   ),
   grouped as (
@@ -634,7 +693,7 @@ begin
   )
   select count(*) into v_day_streak
   from grouped
-  where grp = (select grp from grouped where d = (clock_timestamp() at time zone 'utc')::date);
+  where grp = (select grp from grouped where d = v_today);
 
   -- XP: a flat 10 per correct answer, boosted by a same-day-streak
   -- multiplier (rewards showing up daily — 3+ days = 1.25x, 7+ = 1.5x),
@@ -655,9 +714,18 @@ begin
   v_combo_bonus := case when p_is_correct and v_new_streak > 0 and v_new_streak % 5 = 0 then 15 else 0 end;
   v_xp_gain := v_base_xp + v_combo_bonus;
 
+  -- Daily XP limit: whether an answer is right is reported by the app,
+  -- so a script could otherwise collect XP without end. Far above what a
+  -- person earns in a day (~300 correct answers); beyond it the answer
+  -- still counts for accuracy, sessions and badges — just no XP.
+  if v_xp_gain > 0 and coalesce(v_xp_today, 0) + v_xp_gain > c_daily_xp_cap then
+    v_xp_gain := greatest(0, c_daily_xp_cap - coalesce(v_xp_today, 0));
+    v_capped := true;
+  end if;
+
   insert into public.user_stats (
     user_id, xp, total_correct, total_answers, current_streak, best_streak,
-    last_attempt_at, type_correct_counts
+    last_attempt_at, type_correct_counts, xp_day, xp_today
   )
   values (
     v_uid,
@@ -667,10 +735,14 @@ begin
     case when p_is_correct then 1 else 0 end,
     case when p_is_correct then 1 else 0 end,
     clock_timestamp(),
-    case when p_is_correct then jsonb_build_object(p_question_type, 1) else '{}'::jsonb end
+    case when p_is_correct then jsonb_build_object(p_question_type, 1) else '{}'::jsonb end,
+    v_today,
+    v_xp_gain
   )
   on conflict (user_id) do update set
     xp = public.user_stats.xp + v_xp_gain,
+    xp_day = v_today,
+    xp_today = (case when public.user_stats.xp_day = v_today then public.user_stats.xp_today else 0 end) + v_xp_gain,
     total_correct = public.user_stats.total_correct + (case when p_is_correct then 1 else 0 end),
     total_answers = public.user_stats.total_answers + 1,
     current_streak = case when p_is_correct then public.user_stats.current_streak + 1 else 0 end,
@@ -839,7 +911,8 @@ begin
 
   return jsonb_build_object(
     'earned', to_jsonb(v_earned), 'xp', v_xp,
-    'xpGained', v_xp_gain, 'currentStreak', v_current_streak
+    'xpGained', v_xp_gain, 'currentStreak', v_current_streak,
+    'xpCapped', v_capped, 'dailyXpCap', c_daily_xp_cap
   );
 end;
 $$;
@@ -1062,14 +1135,16 @@ from public.attempts
 where user_id = auth.uid() and page is not null
 group by user_id, page;
 
+-- Days in the user's own time zone (user_settings.time_zone, else UTC).
 create or replace view public.user_daily_activity as
 select
-  user_id,
-  (created_at at time zone 'utc')::date as activity_date,
+  a.user_id,
+  (a.created_at at time zone coalesce(us.time_zone, 'UTC'))::date as activity_date,
   count(*) as total_answers
-from public.attempts
-where user_id = auth.uid()
-group by user_id, (created_at at time zone 'utc')::date;
+from public.attempts a
+left join public.user_settings us on us.user_id = a.user_id
+where a.user_id = auth.uid()
+group by a.user_id, (a.created_at at time zone coalesce(us.time_zone, 'UTC'))::date;
 
 -- 15) Friend system — replaces the earlier link-token progress
 --     sharing entirely. A user shares their friend_code (see
@@ -1330,10 +1405,10 @@ begin
   select coalesce(jsonb_agg(jsonb_build_object('date', activity_date, 'total', total_answers) order by activity_date), '[]'::jsonb)
     into v_daily
   from (
-    select (created_at at time zone 'utc')::date as activity_date, count(*) as total_answers
+    select (created_at at time zone public.user_time_zone(p_user_id))::date as activity_date, count(*) as total_answers
     from public.attempts
     where user_id = p_user_id
-    group by (created_at at time zone 'utc')::date
+    group by 1
   ) d;
 
   select coalesce(jsonb_agg(jsonb_build_object(

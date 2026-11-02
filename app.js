@@ -4969,6 +4969,7 @@ if (typeof onAuthChange === "function") {
 
     if (user && typeof loadRemoteSettings === "function") {
       const remote = await loadRemoteSettings();
+      if (typeof syncTimeZone === "function") syncTimeZone(remote ? remote.time_zone : null).catch(() => {});
       if (remote) {
         applyRemoteSettings(remote);
       } else {

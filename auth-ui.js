@@ -1750,21 +1750,27 @@ function renderHeatmapInto(containerEl, pageStats) {
   containerEl.innerHTML = html;
 }
 
+// "YYYY-MM-DD" of a date in this device's own time zone.
+function localDayKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function computeStreaks(dailyActivity) {
-  // Day keys are UTC dates, matching how the DB groups activity
-  // (user_daily_activity / record_attempt()'s day streak).
+  // Day keys are the user's own dates — the DB groups activity in the
+  // time zone the app sends (user_settings.time_zone; see
+  // user_daily_activity / record_attempt()'s day streak).
   const daySet = new Set((dailyActivity || []).map((d) => d.date));
   let current = 0;
   const cursor = new Date();
   // A streak is still alive until the end of today even if today has no
   // activity yet — count back from yesterday in that case instead of
   // showing 0 every morning.
-  if (!daySet.has(cursor.toISOString().slice(0, 10))) cursor.setUTCDate(cursor.getUTCDate() - 1);
+  if (!daySet.has(localDayKey(cursor))) cursor.setDate(cursor.getDate() - 1);
   for (;;) {
-    const key = cursor.toISOString().slice(0, 10);
+    const key = localDayKey(cursor);
     if (!daySet.has(key)) break;
     current++;
-    cursor.setUTCDate(cursor.getUTCDate() - 1);
+    cursor.setDate(cursor.getDate() - 1);
   }
 
   let longest = 0;
@@ -1786,8 +1792,8 @@ function renderStreakInto(stripEl, numbersEl, dailyActivity) {
   let html = "";
   for (let i = 0; i <= 29; i++) {
     const d = new Date(today);
-    d.setUTCDate(d.getUTCDate() - i);
-    const key = d.toISOString().slice(0, 10);
+    d.setDate(d.getDate() - i);
+    const key = localDayKey(d);
     const total = dayMap.get(key);
     const active = total != null;
     html += `<div class="streak-day${active ? " active" : ""}" title="${key}${active ? ` — ${total} سؤال` : ""}"></div>`;
