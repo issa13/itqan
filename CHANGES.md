@@ -1,3 +1,28 @@
+# 🔍 Full check of the project — 2026-11-02 (2)
+
+## To do on your side (once)
+1. Supabase → SQL Editor → run the whole `supabase-schema.sql` again (two fixes below). No Edge Function deploy needed.
+2. Phone app: `cd mobile && npm run sync`, then build.
+
+## What was checked
+- **Code:** every script linted together as one program (undefined names, duplicates, unreachable code) — clean; all ids used by the code exist in the page, no duplicate ids; the HTML validated.
+- **Database:** the schema run on an empty database, on top of the previous version, and again on itself; every table has row-level security; every privileged function pins its search_path and is callable only by signed-in users; the views only show the caller's own data (or public sessions); tests for the new quick match, the page-set sessions and the locked session fields.
+- **Server functions:** both read the caller from their login token and check permissions before touching anything.
+- **Security:** every place a name typed by a user is shown is escaped (no script injection); no secret keys in the repository (only the public «publishable» key, which is meant to be public).
+- **In the browser:** every tab and window at 320 / 390 / 820 / 1280 px, light and dark — no errors and nothing sticking out of the screen; all 17 question types generate; a whole 🎲 ذاتي quiz to the results; the app with no internet.
+- **Phone app:** Android manifest, Gradle, the Java code, iOS settings and the build workflow.
+
+## Fixed
+- **«سؤال جديد» stayed off:** after answering a question, choosing a type that doesn't fit the range (e.g. «خمن الجزء» in جزء عمّ) and then one that does left the button disabled with the old message. Now it comes back on.
+- **Leaderboard fairness with page sets:** a ذاتي session on e.g. pages 10 and 600 looked like it covered 591 pages. The session views now give the real number of pages (`page_count`) and the ranking uses it; such a session shows «10–600 (2 صفحة)».
+- **Answers outside a page set** are no longer counted in that session (still count for XP and stats, like answers outside a range).
+- **Speed with a long history:** the review queue used to look through the whole review history for every page; it now builds an index once (2 years × 604 pages: ~4 ms per plan).
+- A stray `</div>` at the end of index.html.
+
+## Known, not changed (bigger decisions)
+- **XP trusts the app:** whether an answer was right is reported by the app, so someone calling the API directly could collect XP (at most one answer per 350 ms). Fixing it means checking answers on the server, as duels already do.
+- **Days are counted in UTC on the server** (the profile heatmap, the day-streak XP bonus): in Lebanon, answers between midnight and 2–3 AM count for the previous day.
+
 # 📗 حفظي — its own tab, review mode, earlier days, tests on what you reviewed, «🎲 عشوائي» — 2026-11-02
 
 ## To do on your side (once)

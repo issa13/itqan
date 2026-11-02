@@ -584,6 +584,8 @@ begin
       select 1 from public.sessions
       where id = p_session_id and user_id = v_uid and finished_at is null
         and (p_page is null or range_min is null or p_page between range_min and coalesce(range_max, 604))
+        -- a quiz on a set of pages only counts answers from that set
+        and (p_page is null or page_set is null or p_page = any(page_set))
     ) into v_owns_session;
     if not v_owns_session then
       p_session_id := null;
@@ -924,11 +926,13 @@ select
   s.created_at,
   count(a.id) as total_answers,
   count(a.id) filter (where a.is_correct) as total_correct,
-  max(a.created_at) as last_active
+  max(a.created_at) as last_active,
+  -- how many pages the session really covers (a page set may be sparse)
+  coalesce(cardinality(s.page_set), s.range_max - s.range_min + 1) as page_count
 from public.sessions s
 left join public.attempts a on a.session_id = s.id
 where s.user_id = auth.uid()
-group by s.id, s.user_id, s.title, s.is_public, s.range_min, s.range_max, s.created_at
+group by s.id, s.user_id, s.title, s.is_public, s.range_min, s.range_max, s.page_set, s.created_at
 order by s.created_at desc;
 
 -- 10) Retire the old whole-profile leaderboard view — replaced by the
@@ -962,13 +966,15 @@ select
   min(a.page) as min_page,
   max(a.page) as max_page,
   max(a.created_at) as last_active,
-  u.xp as owner_xp
+  u.xp as owner_xp,
+  -- how many pages the session really covers (a page set may be sparse)
+  coalesce(cardinality(s.page_set), s.range_max - s.range_min + 1) as page_count
 from public.sessions s
 join public.profiles p on p.id = s.user_id
 left join public.attempts a on a.session_id = s.id
 left join public.user_stats u on u.user_id = s.user_id
 where s.is_public = true
-group by s.id, s.user_id, p.display_name, s.title, s.range_min, s.range_max, s.created_at, u.xp;
+group by s.id, s.user_id, p.display_name, s.title, s.range_min, s.range_max, s.page_set, s.created_at, u.xp;
 
 -- 11b) Same shape as session_leaderboard above, but only counting
 --      attempts from the last 7 days — powers the "📅 هذا الأسبوع" tab
@@ -996,13 +1002,15 @@ select
   min(a.page) as min_page,
   max(a.page) as max_page,
   max(a.created_at) as last_active,
-  u.xp as owner_xp
+  u.xp as owner_xp,
+  -- how many pages the session really covers (a page set may be sparse)
+  coalesce(cardinality(s.page_set), s.range_max - s.range_min + 1) as page_count
 from public.sessions s
 join public.profiles p on p.id = s.user_id
 left join public.attempts a on a.session_id = s.id and a.created_at >= now() - interval '7 days'
 left join public.user_stats u on u.user_id = s.user_id
 where s.is_public = true
-group by s.id, s.user_id, p.display_name, s.title, s.range_min, s.range_max, s.created_at, u.xp;
+group by s.id, s.user_id, p.display_name, s.title, s.range_min, s.range_max, s.page_set, s.created_at, u.xp;
 
 -- 12) Only one public (leaderboard) session per user. The app UI
 --     already enforces this (turning one session public quietly

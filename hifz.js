@@ -154,7 +154,7 @@ const HifzStore = (function () {
     try { await saveHifz(doc(), sortedPages(), new Date(updatedAt).toISOString()); } catch (e) { /* offline: pushed next time */ }
   }
 
-  function changed() { updatedAt = Date.now(); persist(); emit(); schedulePush(); }
+  function changed() { reviewIndex = null; updatedAt = Date.now(); persist(); emit(); schedulePush(); }
 
   load();
 
@@ -210,14 +210,28 @@ const HifzStore = (function () {
   // for a while) and undone again. pages[p].r caches the latest one.
   const MAX_BACK_DAYS = 30; // how far back a review can be recorded
 
-  function reviewDays(page) {
-    return Object.keys(log).filter((d) => log[d].r.includes(page)).sort();
+  // page → its review days (sorted), built from the log when needed and
+  // dropped whenever the log changes — the queue asks for every page's
+  // last review, so this keeps a long history fast.
+  let reviewIndex = null;
+  function getReviewIndex() {
+    if (reviewIndex) return reviewIndex;
+    reviewIndex = new Map();
+    Object.keys(log).sort().forEach((d) => {
+      log[d].r.forEach((p) => {
+        if (!reviewIndex.has(p)) reviewIndex.set(p, []);
+        reviewIndex.get(p).push(d);
+      });
+    });
+    return reviewIndex;
   }
+  function reviewDays(page) { return (getReviewIndex().get(page) || []).slice(); }
   // The last review strictly before `day` (used to order the queue for
   // that day, so ticking pages on it never reshuffles its list).
   function lastReviewBefore(page, day) {
     let best = null;
-    Object.keys(log).forEach((d) => { if (d < day && log[d].r.includes(page) && (!best || d > best)) best = d; });
+    const days = getReviewIndex().get(page) || [];
+    for (let i = days.length - 1; i >= 0; i--) { if (days[i] < day) { best = days[i]; break; } }
     const cached = pages[page] && pages[page].r;
     if (cached && cached < day && !log[cached] && (!best || cached > best)) best = cached; // from before the log
     return best;
@@ -258,6 +272,7 @@ const HifzStore = (function () {
       if (!entry.r.includes(page)) return { ok: true };
       entry.r = entry.r.filter((p) => p !== page);
     }
+    reviewIndex = null;
     recomputeR(page);
     changed();
     return { ok: true };
@@ -487,6 +502,7 @@ const HifzStore = (function () {
       keepLatestReview(pages, remote.pages);
     }
     log = mergedLog;
+    reviewIndex = null;
     persist();
     emit();
     // this device has something the account doesn't → upload the merged copy

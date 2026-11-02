@@ -1441,6 +1441,10 @@ function wilsonLowerBound(correct, total, z = 1.96) {
 }
 
 function pageRangeSpan(row) {
+  // page_count (supabase-schema.sql views): the real number of pages —
+  // a quiz on a set of pages (📗 محفوظاتي / 🔁 …) can be sparse, so its
+  // first–last span would overstate how much it covers.
+  if (row.page_count != null && row.page_count > 0) return row.page_count;
   if (row.range_min != null && row.range_max != null) return row.range_max - row.range_min + 1;
   if (row.min_page != null && row.max_page != null) return row.max_page - row.min_page + 1;
   return 0;
@@ -1451,7 +1455,13 @@ function pageRangeSpan(row) {
 // falls back to the span of pages actually asked, for sessions
 // recorded before that column existed.
 function pageRangeLabel(row) {
-  if (row.range_min != null && row.range_max != null) return `${row.range_min}–${row.range_max}`;
+  if (row.range_min != null && row.range_max != null) {
+    const span = row.range_max - row.range_min + 1;
+    // a set of pages inside that span: say how many it really has
+    return row.page_count != null && row.page_count < span
+      ? `${row.range_min}–${row.range_max} (${row.page_count} صفحة)`
+      : `${row.range_min}–${row.range_max}`;
+  }
   if (row.min_page != null && row.max_page != null) return `${row.min_page}–${row.max_page}`;
   return null;
 }

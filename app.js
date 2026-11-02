@@ -724,6 +724,7 @@ async function getBlockMessageForCurrentState(type) {
 
 // Reflects getBlockMessageForCurrentState() in the UI immediately on
 // every relevant change, not just when generating fails.
+let generationBlockShown = null; // the "this type doesn't fit" message currently disabling «سؤال جديد»
 async function refreshGenerationAvailability() {
   updateHomeRangeChip();
 
@@ -733,9 +734,18 @@ async function refreshGenerationAvailability() {
   if (msg) {
     generateBtn.disabled = true;
     setStatus(msg);
+    generationBlockShown = msg;
   } else if (!hasActiveCard) {
     generateBtn.disabled = false;
     setStatus("");
+    generationBlockShown = null;
+  } else if (generationBlockShown) {
+    // A card is on screen (already answered) and the button was only off
+    // because the previously chosen type didn't fit the range — the new
+    // choice fits, so turn it back on and drop the stale explanation.
+    generateBtn.disabled = false;
+    if (statusEl.textContent === generationBlockShown) setStatus("");
+    generationBlockShown = null;
   }
 }
 
@@ -2002,6 +2012,7 @@ async function generateCard() {
     if (blockMsg) {
       generateBtn.disabled = true;
       setStatus(blockMsg);
+      generationBlockShown = blockMsg;
       alert(blockMsg);
       return;
     }
